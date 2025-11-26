@@ -5,19 +5,37 @@ this.metaClass = null
  *  ReqRelCopier.groovy
  *  Requirements Relationship Duplicator (FROM → TO), WORK_ENV Edition
  *
- *  Behavior:
+ *  Updated Behavior:
  *    - DOES NOT modify or delete existing relationships.
- *    - For each relationship in SCOPE that touches a FROM requirement, and if a
- *      corresponding TO requirement exists (matched by name), create a NEW relationship
- *      of the same UML kind (Abstraction) under the same owner, but pointing to the TO
- *      requirement instead of the FROM requirement.
+ *    - FROM, TO, SCOPE:
+ *        FROM  = root container for source requirements
+ *        TO    = root container for target requirements (matched by name)
+ *        SCOPE = owner package for any NEW relationships created
+ *
+ *    - For each FROM requirement:
+ *        * Discover its relationships ANYWHERE in the model by using
+ *          supplierDependency / clientDependency (adjacency-based access),
+ *          similar in spirit to your getSatisfiedByElements() helper.
+ *        * Filter those relationships by selected SysML stereotype(s):
+ *              Satisfy, Verify, Refine, DeriveReqt, Copy, Trace
+ *        * For each such relationship:
+ *             - Identify the TO requirement matched by name.
+ *             - Build a candidate new relationship with TO on the same side
+ *               (supplier or client) that FROM occupied, preserving all
+ *               other endpoints.
+ *             - Check for an existing equivalent relationship on the TO
+ *               requirement by examining TO’s dependency lists
+ *               (supplierDependency/clientDependency), regardless of the
+ *               owner of that existing relationship.
+ *             - If no equivalent exists, create a NEW relationship under
+ *               SCOPE (owner = SCOPE), copying name and stereotypes.
  *
  *  CSV Log format:
  *      Status,FromID,FromName,ToID,ToName,RelationshipType
  *
  *    Status values:
  *      Ignored – no TO requirement found for FROM requirement (logged once per unmatched FROM)
- *      Skipped – relationship already exists on TO requirement
+ *      Skipped – relationship already exists on TO requirement (any owner)
  *      Copied  – relationship created (or would be, in DRY_RUN)
  *******************************************************************************************/
 
@@ -60,7 +78,7 @@ File logFile = null
 int ignoredCount   = 0   // FROM req has no TO match
 int skippedCount   = 0   // relationship already exists on TO
 int copiedCount    = 0   // relationship created / would be created
-int candidateCount = 0   // relationships that matched FROM/TO + type
+int candidateCount = 0   // relationships that matched FROM/TO + type (considered for duplication)
 
 
 // =========================================================================================
@@ -291,9 +309,7 @@ def hasWantedStereo = { rel, enabledTypes, relStereoMap ->
 
 
 // =========================================================================================
-/** UTIL: Determine the "primary" type name for logging, given enabled types.
- *  Robust: uses SysMLProfile map first, then falls back to stereotype names (case-insensitive).
- */
+/** UTIL: Determine the "primary" type name for logging, given enabled types. */
 // =========================================================================================
 def getRelTypeName = { rel, relStereoMap, enabledTypes ->
     def applied = StereotypesHelper.getStereotypes(rel) ?: []
@@ -315,62 +331,95 @@ def getRelTypeName = { rel, relStereoMap, enabledTypes ->
 
 
 // =========================================================================================
-/** UTIL: Collect all relationships under a scope element */
+/**
+ * NEW UTIL: Collect all relationships of a given type for a requirement by adjacency.
+ *
+ *  This mirrors your getSatisfiedByElements() pattern:
+ *    - Use supplierDependency / clientDependency of the requirement.
+ *    - Filter by stereotype (e.g., «satisfy», «verify», etc.).
+ *    - Return the Relationship objects (not just the client/supplier elements).
+ *
+ *  We check both supplier and client dependency lists so that the code is robust
+ *  to different SysML usage patterns.
+ */
 // =========================================================================================
-def collectRelationships = { scopeElement ->
-    def result = []
-    def walkR
-    walkR = { e ->
-        if (e == null) return
-        e.ownedElement?.each { child ->
-            if (child instanceof Relationship) {
-                result << child
-            }
-            walkR(child)
-        }
+def collectTypedRelsForRequirement = { NamedElement req,
+                                       String typeName,
+                                       relStereoMap ->
+
+    def results = [] as List<Relationship>
+    def seen    = new HashSet<Element>()
+
+    // Gather all dependencies where req participates, via adjacency lists
+    def deps = []
+    try {
+        req.getSupplierDependency()?.each { deps << it }
+    } catch (Throwable ignored) {}
+    try {
+        req.getClientDependency()?.each { deps << it }
+    } catch (Throwable ignored) {}
+
+    deps.each { def dep ->
+        if (!(dep instanceof Relationship)) return
+        if (seen.contains(dep)) return
+        seen.add(dep)
+
+        // Use stereotype check pattern
+        if (!hasWantedStereo(dep, [typeName], relStereoMap)) return
+
+        results << (dep as Relationship)
     }
-    walkR(scopeElement)
-    return result
+
+    return results
 }
 
 
 // =========================================================================================
-/** UTIL: Check if an equivalent relationship already exists on the TO side */
+/**
+ * NEW UTIL: Check if an equivalent relationship already exists on the TO requirement,
+ * regardless of the owner of that existing relationship.
+ *
+ *  - We build the target endpoint sets (suppliers/clients) using:
+ *      otherSuppliers / otherClients + TO requirement on the same side
+ *      that FROM occupied (supplier/client).
+ *  - We then walk TO’s supplierDependency + clientDependency, and for each
+ *    relationship with the same stereotype/type, we compare the endpoint sets.
+ *
+ *  This avoids any whole-model search while still respecting "regardless of
+ *  that relationship's owner".
+ */
 // =========================================================================================
-def hasExistingDuplicateRel = { rel, owner, suppliers, clients,
-                                matchFrom, matchTo,
-                                fromIsSupplier, fromIsClient,
-                                relStereoMap, enabledTypes ->
+def hasExistingDuplicateOnTo = { NamedElement toReq,
+                                 String typeName,
+                                 List<Element> otherSuppliers,
+                                 List<Element> otherClients,
+                                 boolean toIsSupplier,
+                                 boolean toIsClient,
+                                 relStereoMap ->
 
-    if (owner == null) return false
+    // Build the target end sets
+    def targetSupSet = new LinkedHashSet<Element>(otherSuppliers ?: [])
+    def targetCliSet = new LinkedHashSet<Element>(otherClients ?: [])
 
-    // Build the endpoint sets that the NEW relationship would have
-    def targetSuppliers = new ArrayList(suppliers)
-    def targetClients   = new ArrayList(clients)
+    if (toIsSupplier) targetSupSet.add(toReq)
+    if (toIsClient)   targetCliSet.add(toReq)
 
-    if (fromIsSupplier) {
-        targetSuppliers.remove(matchFrom)
-        targetSuppliers.add(matchTo)
-    }
-    else if (fromIsClient) {
-        targetClients.remove(matchFrom)
-        targetClients.add(matchTo)
-    }
+    // Collect all relationships that already touch TO (adjacency)
+    def deps = []
+    try {
+        toReq.getSupplierDependency()?.each { deps << it }
+    } catch (Throwable ignored) {}
+    try {
+        toReq.getClientDependency()?.each { deps << it }
+    } catch (Throwable ignored) {}
 
-    def targetSupSet = targetSuppliers as Set
-    def targetCliSet = targetClients as Set
-    def thisTypeName = getRelTypeName(rel, relStereoMap, enabledTypes)
+    // Check for type + endpoint match
+    return (deps.any { def dep ->
+        if (!(dep instanceof Relationship)) return false
+        if (!hasWantedStereo(dep, [typeName], relStereoMap)) return false
 
-    return (owner.ownedElement?.any { other ->
-        if (other == rel) return false
-        if (!(other instanceof Relationship)) return false
-        if (other.getClass() != rel.getClass()) return false
-
-        def otherTypeName = getRelTypeName(other, relStereoMap, enabledTypes)
-        if (otherTypeName != thisTypeName) return false
-
-        def oSupSet = other.getSupplier().toList() as Set
-        def oCliSet = other.getClient().toList() as Set
+        def oSupSet = new LinkedHashSet<Element>(dep.getSupplier()?.toList() ?: [])
+        def oCliSet = new LinkedHashSet<Element>(dep.getClient()?.toList() ?: [])
 
         return (oSupSet == targetSupSet && oCliSet == targetCliSet)
     }) ?: false
@@ -458,14 +507,14 @@ def toRoot = toSel.element
 INFO("TO root selected: ${toRoot?.name ?: toRoot}")
 
 INFO("Opening RELATIONSHIP SCOPE picker…")
-def scopeSel = SLMNP.pick("Select Relationship Scope", "Pick the container holding the relationships to duplicate")
+def scopeSel = SLMNP.pick("Select Relationship Owner (SCOPE)", "Pick the container that will own any NEW relationships")
 if (!scopeSel) {
     WARN("Canceled at SCOPE picker.")
     closeLog()
     return
 }
 def relScope = scopeSel.element
-INFO("Scope selected: ${relScope?.name ?: relScope}")
+INFO("SCOPE (owner for NEW relationships): ${relScope?.name ?: relScope}")
 
 
 // =========================================================================================
@@ -483,6 +532,7 @@ if (!enabledRelTypes || enabledRelTypes.isEmpty()) {
 INFO("Enabled relationship types: " + enabledRelTypes.join(", "))
 
 
+
 // =========================================================================================
 // GATHER REQUIREMENTS AND PAIR FROM→TO BY NAME
 // =========================================================================================
@@ -495,7 +545,7 @@ def toReqs = gatherReqs(toRoot, reqStereo)
 INFO("FROM requirement count = ${fromReqs.size()}")
 INFO("TO   requirement count = ${toReqs.size()}")
 
-// Build pairs map: FROM Requirement → TO Requirement
+// Build pairs map: FROM Requirement → TO Requirement (by name)
 def pairs = [:] as LinkedHashMap<Element, Element>
 fromReqs.each { name, fromReq ->
     def toReq = toReqs[name]
@@ -518,113 +568,96 @@ if (pairs.isEmpty()) {
 
 
 // =========================================================================================
-// COLLECT RELATIONSHIPS UNDER SCOPE
+// DUPLICATE RELATIONSHIPS USING REQUIREMENT ADJACENCY (NO WHOLE-MODEL SEARCH)
 // =========================================================================================
-INFO("Collecting relationships under SCOPE…")
-def allRels = collectRelationships(relScope)
-INFO("Relationships in scope = ${allRels.size()}")
-
-
-/*******************************************************************************************
- * DUPLICATE RELATIONSHIPS (NO REWIRING, WITH DUPLICATE SUPPRESSION)
- *******************************************************************************************/
 def mem  = ModelElementsManager.getInstance()
 def sess = SessionManager.getInstance()
 
 sess.createSession("ReqRelCopier – duplicate FROM→TO")
 
 try {
-    allRels.each { rel ->
-
-        if (!hasWantedStereo(rel, enabledRelTypes, relStereos)) return
-
-        def suppliers = rel.getSupplier().toList()
-        def clients   = rel.getClient().toList()
-
-        def matchFrom  = null
-        def matchTo    = null
-        def fromIsSupplier = false
-        def fromIsClient   = false
-
-        suppliers.each { s ->
-            if (pairs.containsKey(s) && matchFrom == null) {
-                matchFrom      = s
-                matchTo        = pairs[s]
-                fromIsSupplier = true
-            }
-        }
-        clients.each { c ->
-            if (pairs.containsKey(c) && matchFrom == null) {
-                matchFrom    = c
-                matchTo      = pairs[c]
-                fromIsClient = true
-            }
-        }
-
-        if (!matchFrom || !matchTo) return
-
-        def typeName = getRelTypeName(rel, relStereos, enabledRelTypes)
-        candidateCount++
-
-        def owner = rel.getOwner()
-        if (owner == null || !owner.isEditable()) {
-            WARN("Skipping relationship with non-editable owner: ${rel}")
+    pairs.each { Element fromReq, Element toReq ->
+        if (!(fromReq instanceof NamedElement) || !(toReq instanceof NamedElement)) {
             return
         }
+        def fromNamed = fromReq as NamedElement
+        def toNamed   = toReq   as NamedElement
 
-        // Duplicate-suppression check
-        if (hasExistingDuplicateRel(
-                rel,
-                owner,
-                suppliers,
-                clients,
-                matchFrom,
-                matchTo,
-                fromIsSupplier,
-                fromIsClient,
-                relStereos,
-                enabledRelTypes
-        )) {
-            // Skipped – relationship already exists on TO requirement
-            logCsvRow(logWriter, "Skipped", matchFrom, matchTo, typeName)
-            skippedCount++
-            return
+        // For each selected relationship stereotype type, collect adjacency-based rels
+        enabledRelTypes.each { String typeName ->
+            def typedRels = collectTypedRelsForRequirement(fromNamed, typeName, relStereos)
+            typedRels.each { Relationship rel ->
+                candidateCount++
+
+                def suppliers = rel.getSupplier()?.toList() ?: []
+                def clients   = rel.getClient()?.toList() ?: []
+
+                boolean fromIsSupplier = suppliers.contains(fromNamed)
+                boolean fromIsClient   = clients.contains(fromNamed)
+
+                // Sanity check: FROM must actually participate
+                if (!fromIsSupplier && !fromIsClient) {
+                    return
+                }
+
+                // Other endpoints are everything except FROM
+                def otherSuppliers = suppliers.findAll { it != fromNamed }
+                def otherClients   = clients.findAll { it != fromNamed }
+
+                // Duplicate-suppression check:
+                // Look at TO's dependencies, regardless of their owner
+                if (hasExistingDuplicateOnTo(
+                        toNamed,
+                        typeName,
+                        otherSuppliers,
+                        otherClients,
+                        fromIsSupplier,
+                        fromIsClient,
+                        relStereos
+                )) {
+                    // Skipped – relationship already exists on TO requirement
+                    logCsvRow(logWriter, "Skipped", fromNamed, toNamed, typeName)
+                    skippedCount++
+                    return
+                }
+
+                // At this point, we'd create a new relationship (unless DRY_RUN)
+                if (!DRY_RUN) {
+                    // Create an Abstraction instance for all SysML rel types in this tool
+                    def newRel = project.getElementsFactory().createAbstractionInstance()
+
+                    // Owner is ALWAYS SCOPE now, independent of the original relationship's owner
+                    mem.addElement(newRel, relScope)
+
+                    // Copy name if present
+                    if (rel instanceof NamedElement) {
+                        newRel.setName(rel.getName())
+                    }
+
+                    // Copy all endpoints except FROM
+                    otherSuppliers.each { s -> newRel.getSupplier().add(s) }
+                    otherClients.each   { c -> newRel.getClient().add(c) }
+
+                    // Put TO on the same side as FROM was
+                    if (fromIsSupplier) {
+                        newRel.getSupplier().add(toNamed)
+                    }
+                    if (fromIsClient) {
+                        newRel.getClient().add(toNamed)
+                    }
+
+                    // Copy all stereotypes from original relationship
+                    def applied = StereotypesHelper.getStereotypes(rel)
+                    applied?.each { st ->
+                        StereotypesHelper.addStereotype(newRel, st)
+                    }
+                }
+
+                // Copied – either actually created or would be (in DRY_RUN)
+                logCsvRow(logWriter, "Copied", fromNamed, toNamed, typeName)
+                copiedCount++
+            }
         }
-
-        // At this point, we'd create a new relationship (unless DRY_RUN)
-        if (!DRY_RUN) {
-            def newRel = project.getElementsFactory().createAbstractionInstance()
-            mem.addElement(newRel, owner)
-
-            // Copy name if present
-            if (rel instanceof NamedElement) {
-                newRel.setName(rel.getName())
-            }
-
-            // Copy endpoints from original
-            suppliers.each { s -> newRel.getSupplier().add(s) }
-            clients.each   { c -> newRel.getClient().add(c) }
-
-            // Swap FROM requirement to TO requirement on the correct side
-            if (fromIsSupplier) {
-                newRel.getSupplier().remove(matchFrom)
-                newRel.getSupplier().add(matchTo)
-            }
-            else if (fromIsClient) {
-                newRel.getClient().remove(matchFrom)
-                newRel.getClient().add(matchTo)
-            }
-
-            // Copy all stereotypes from original relationship
-            def applied = StereotypesHelper.getStereotypes(rel)
-            applied?.each { st ->
-                StereotypesHelper.addStereotype(newRel, st)
-            }
-        }
-
-        // Copied – either actually created or would be (in DRY_RUN)
-        logCsvRow(logWriter, "Copied", matchFrom, matchTo, typeName)
-        copiedCount++
     }
 
     sess.closeSession()
@@ -634,9 +667,9 @@ catch (Throwable t) {
     try { sess.cancelSession() } catch (Throwable ignore) {}
 }
 finally {
-    INFO("Candidate relationships considered = ${candidateCount}")
+    INFO("Candidate relationships considered (FROM adjacency) = ${candidateCount}")
     INFO("Ignored (no TO requirement found) = ${ignoredCount}")
-    INFO("Skipped (relationship already existed) = ${skippedCount}")
+    INFO("Skipped (relationship already existed on TO) = ${skippedCount}")
     INFO("Copied (or would be, in DRY_RUN) = ${copiedCount}")
 
     if (logFile != null && logWriter != null) {
@@ -652,5 +685,5 @@ finally {
     }
 }
 
-INFO("=== ReqRelCopier COMPLETE (FROM→TO duplicator) END ===")
+INFO("=== ReqRelCopier COMPLETE (FROM→TO duplicator, adjacency-based) END ===")
 return
