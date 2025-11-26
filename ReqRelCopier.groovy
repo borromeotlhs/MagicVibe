@@ -2,30 +2,23 @@
 this.metaClass = null
 
 /*******************************************************************************************
- *  ReqRelSwitcher.groovy
+ *  ReqRelCopier.groovy
  *  Requirements Relationship Duplicator (FROM → TO), WORK_ENV Edition
  *
  *  Behavior:
- *    - DOES NOT modify existing relationships.
+ *    - DOES NOT modify or delete existing relationships.
  *    - For each relationship in SCOPE that touches a FROM requirement, and if a
  *      corresponding TO requirement exists (matched by name), create a NEW relationship
  *      of the same UML kind (Abstraction) under the same owner, but pointing to the TO
  *      requirement instead of the FROM requirement.
  *
- *    Example:
- *      FROM_req  <-- «satisfy» --  SysML_Element      (original, unchanged)
- *      TO_req    <-- «satisfy» --  SysML_Element      (new, added by this macro)
+ *  CSV Log format:
+ *      Status,FromID,FromName,ToID,ToName,RelationshipType
  *
- *  Key Features:
- *    - Uses SLMNP.pick(title, label) for FROM, TO, and SCOPE
- *    - DRY_RUN toggle dialog
- *    - Relationship type multi-select dialog
- *    - Recursively gathers requirements under FROM and TO
- *    - Pairs FROM/TO requirements by name
- *    - Only processes relationships under chosen SCOPE
- *    - Creates new Abstraction relationships; copies stereotypes, name, and endpoints
- *    - Respects element editability; skips locked owners
- *    - WORK_ENV-safe (no forward refs, closures first)
+ *    Status values:
+ *      Ignored – no TO requirement found for FROM requirement (logged once per unmatched FROM)
+ *      Skipped – relationship already exists on TO requirement
+ *      Copied  – relationship created (or would be, in DRY_RUN)
  *******************************************************************************************/
 
 
@@ -38,7 +31,10 @@ import com.nomagic.magicdraw.openapi.uml.SessionManager
 import com.nomagic.magicdraw.openapi.uml.ModelElementsManager
 import com.nomagic.magicdraw.sysml.util.SysMLProfile
 import com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper
-import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.*
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Relationship
+
 import groovy.lang.GroovyShell
 
 import javax.swing.JOptionPane
@@ -47,26 +43,145 @@ import javax.swing.BoxLayout
 import javax.swing.JCheckBox
 
 import java.io.File
+import java.io.FileWriter
+import java.io.PrintWriter
+import java.text.SimpleDateFormat
 
 
 // =========================================================================================
-// LOG HELPERS (no timestamps; MagicDraw adds them)
+// GLOBAL CONFIG
 // =========================================================================================
-def LOG  = { msg -> Application.getInstance().getGUILog().log(msg) }
-def WARN = { msg -> Application.getInstance().getGUILog().log("WARN: ${msg}") }
-def ERR  = { msg -> Application.getInstance().getGUILog().log("ERROR: ${msg}") }
+def DRY_RUN = false   // Will be set by askDryRun()
+
+PrintWriter logWriter = null
+File logFile = null
+
+// Counters
+int ignoredCount   = 0   // FROM req has no TO match
+int skippedCount   = 0   // relationship already exists on TO
+int copiedCount    = 0   // relationship created / would be created
+int candidateCount = 0   // relationships that matched FROM/TO + type
 
 
 // =========================================================================================
-/** LOAD SLMNP UTILITY */
+// LOGGING HELPERS (GUILog + console)
+// =========================================================================================
+def guiLog = { String text ->
+    try {
+        Application.getInstance().getGUILog().log(text)
+    } catch (Throwable t) {
+        println text
+    }
+}
+
+def INFO = { String msg ->
+    guiLog("[ReqRelCopier] ${msg}")
+}
+
+def WARN = { String msg ->
+    guiLog("[ReqRelCopier][WARN] ${msg}")
+}
+
+def ERR = { String msg ->
+    guiLog("[ReqRelCopier][ERROR] ${msg}")
+}
+
+
+// =========================================================================================
+/** CSV helpers */
+// =========================================================================================
+def csvEscape = { String v ->
+    if (v == null) return ""
+    // Replace any double quotes with single quotes to keep CSV simple
+    return v.replace('"', '\'')
+}
+
+def logCsvRow = { PrintWriter writer,
+                  String status,
+                  Element fromReq,
+                  Element toReq,
+                  String relType ->
+
+    if (writer == null) return
+
+    def fromId   = fromReq?.getID() ?: ""
+    def fromName = (fromReq instanceof NamedElement) ? (fromReq.name ?: "") : ""
+
+    def toId     = toReq?.getID() ?: ""
+    def toName   = (toReq instanceof NamedElement) ? (toReq.name ?: "") : ""
+
+    def vals = [
+        csvEscape(status),
+        csvEscape(fromId),
+        csvEscape(fromName),
+        csvEscape(toId),
+        csvEscape(toName),
+        csvEscape(relType ?: "")
+    ]
+
+    def line = vals.collect { '"' + it + '"' }.join(",")
+    writer.println(line)
+    writer.flush()
+}
+
+
+// =========================================================================================
+/** Resolve a logs CSV file based on project file name (no Date.format) */
+// =========================================================================================
+def resolveLogsFile = { Project project, String suffix ->
+    def baseDir = new File(System.getProperty("user.dir"))
+    def candidates = [
+        new File(baseDir, "plugins/macros/logs"),
+        new File(baseDir, "logs")
+    ]
+
+    File logsDir = candidates.find { it.exists() && it.isDirectory() }
+    if (!logsDir) {
+        logsDir = candidates[0]
+        if (!logsDir.exists()) {
+            logsDir.mkdirs()
+        }
+    }
+
+    // Determine project base name from project file if possible, else use project name
+    String projectBaseName = "Project"
+    try {
+        def f = project.getFile()  // might not exist; wrapped in try/catch
+        if (f instanceof File) {
+            projectBaseName = f.getName()
+            int dotIdx = projectBaseName.lastIndexOf('.')
+            if (dotIdx > 0) {
+                projectBaseName = projectBaseName.substring(0, dotIdx)
+            }
+        } else {
+            projectBaseName = project.getName() ?: "Project"
+        }
+    } catch (Throwable ignored) {
+        projectBaseName = project.getName() ?: "Project"
+    }
+
+    def sdf = new SimpleDateFormat("yyyyMMdd_HHmmss")
+    def ts  = sdf.format(new Date())
+    return new File(logsDir, "${projectBaseName}_${suffix}_${ts}.csv")
+}
+
+
+// =========================================================================================
+/** LOAD SLMNP UTILITY (WORK_ENV pattern) */
 // =========================================================================================
 def loadSLMNP = {
     def baseDir = new File(System.getProperty("user.dir"))
     def p1 = new File(baseDir, "plugins/macros/lib/SLMNP.groovy")
     def p2 = new File(baseDir, "lib/SLMNP.groovy")
 
-    if (p1.exists()) return new GroovyShell().parse(p1)
-    if (p2.exists()) return new GroovyShell().parse(p2)
+    if (p1.exists()) {
+        INFO("Loading SLMNP from: ${p1.absolutePath}")
+        return new GroovyShell().parse(p1)
+    }
+    if (p2.exists()) {
+        INFO("Loading SLMNP from: ${p2.absolutePath}")
+        return new GroovyShell().parse(p2)
+    }
 
     ERR("SLMNP.groovy not found in plugins/macros/lib or lib.")
     return null
@@ -74,14 +189,14 @@ def loadSLMNP = {
 
 
 // =========================================================================================
-/** MODAL: DRY RUN ON/OFF */
+/** MODAL: DRY RUN ON/OFF (ReqRelSwitcher-style) */
 // =========================================================================================
 def askDryRun = {
     Object[] opts = ["Dry Run (no changes)", "Perform Actual Duplicate"] as Object[]
     int choice = JOptionPane.showOptionDialog(
             null,
             "Choose run mode:",
-            "ReqRelSwitcher Mode",
+            "ReqRelCopier Mode",
             JOptionPane.DEFAULT_OPTION,
             JOptionPane.QUESTION_MESSAGE,
             null,
@@ -93,7 +208,7 @@ def askDryRun = {
 
 
 // =========================================================================================
-/** MODAL: RELATIONSHIP TYPE MULTISELECT */
+/** MODAL: RELATIONSHIP TYPE MULTISELECT (ReqRelSwitcher-style) */
 // =========================================================================================
 def askRelTypes = {
 
@@ -129,13 +244,13 @@ def askRelTypes = {
 
 
 // =========================================================================================
-/** UTIL: Recursively gather requirements under a root */
+/** UTIL: Recursively gather requirements under a root, keyed by name */
 // =========================================================================================
-def gatherReqs = { element, reqStereo ->
-    def out = [:]
+def gatherReqs = { Element element, reqStereo ->
+    def out = [:] as LinkedHashMap<String, Element>
 
     def walk
-    walk = { e ->
+    walk = { Element e ->
         if (e == null) return
         e.ownedElement?.each { child ->
             if (reqStereo && StereotypesHelper.hasStereotypeOrDerived(child, reqStereo)) {
@@ -151,23 +266,48 @@ def gatherReqs = { element, reqStereo ->
 
 
 // =========================================================================================
-/** UTIL: Check if a relationship has one of the enabled SysML requirement stereotypes */
+/** UTIL: Check if a relationship has one of the enabled SysML relationship stereotypes.
+ *  Robust: uses SysMLProfile map first, then falls back to stereotype names (case-insensitive).
+ */
 // =========================================================================================
-def hasWantedStereo = { rel, sterMap ->
-    sterMap.values().any { st ->
-        st != null && StereotypesHelper.hasStereotypeOrDerived(rel, st)
+def hasWantedStereo = { rel, enabledTypes, relStereoMap ->
+    def applied = StereotypesHelper.getStereotypes(rel) ?: []
+
+    for (String tName : enabledTypes) {
+        def st = relStereoMap[tName]
+        if (st != null) {
+            if (StereotypesHelper.hasStereotypeOrDerived(rel, st)) {
+                return true
+            }
+        } else {
+            // Fallback: match by stereotype name (case-insensitive)
+            if (applied.any { it?.name?.equalsIgnoreCase(tName) }) {
+                return true
+            }
+        }
     }
+    return false
 }
 
 
 // =========================================================================================
-/** UTIL: Determine the "primary" type name for logging, given enabled types */
+/** UTIL: Determine the "primary" type name for logging, given enabled types.
+ *  Robust: uses SysMLProfile map first, then falls back to stereotype names (case-insensitive).
+ */
 // =========================================================================================
 def getRelTypeName = { rel, relStereoMap, enabledTypes ->
+    def applied = StereotypesHelper.getStereotypes(rel) ?: []
+
     for (String tName : enabledTypes) {
         def st = relStereoMap[tName]
-        if (st != null && StereotypesHelper.hasStereotypeOrDerived(rel, st)) {
-            return tName
+        if (st != null) {
+            if (StereotypesHelper.hasStereotypeOrDerived(rel, st)) {
+                return tName
+            }
+        } else {
+            if (applied.any { it?.name?.equalsIgnoreCase(tName) }) {
+                return tName
+            }
         }
     }
     return "UnknownType"
@@ -195,9 +335,52 @@ def collectRelationships = { scopeElement ->
 
 
 // =========================================================================================
+/** UTIL: Check if an equivalent relationship already exists on the TO side */
+// =========================================================================================
+def hasExistingDuplicateRel = { rel, owner, suppliers, clients,
+                                matchFrom, matchTo,
+                                fromIsSupplier, fromIsClient,
+                                relStereoMap, enabledTypes ->
+
+    if (owner == null) return false
+
+    // Build the endpoint sets that the NEW relationship would have
+    def targetSuppliers = new ArrayList(suppliers)
+    def targetClients   = new ArrayList(clients)
+
+    if (fromIsSupplier) {
+        targetSuppliers.remove(matchFrom)
+        targetSuppliers.add(matchTo)
+    }
+    else if (fromIsClient) {
+        targetClients.remove(matchFrom)
+        targetClients.add(matchTo)
+    }
+
+    def targetSupSet = targetSuppliers as Set
+    def targetCliSet = targetClients as Set
+    def thisTypeName = getRelTypeName(rel, relStereoMap, enabledTypes)
+
+    return (owner.ownedElement?.any { other ->
+        if (other == rel) return false
+        if (!(other instanceof Relationship)) return false
+        if (other.getClass() != rel.getClass()) return false
+
+        def otherTypeName = getRelTypeName(other, relStereoMap, enabledTypes)
+        if (otherTypeName != thisTypeName) return false
+
+        def oSupSet = other.getSupplier().toList() as Set
+        def oCliSet = other.getClient().toList() as Set
+
+        return (oSupSet == targetSupSet && oCliSet == targetCliSet)
+    }) ?: false
+}
+
+
+// =========================================================================================
 // MAIN EXECUTION
 // =========================================================================================
-LOG("=== ReqRelSwitcher (FROM→TO duplicator, WORK_ENV) ===")
+INFO("=== ReqRelCopier (FROM→TO duplicator, WORK_ENV) START ===")
 
 def app = Application.getInstance()
 def project = app.getProject()
@@ -208,7 +391,33 @@ if (!project) {
 
 // Load SLMNP
 def SLMNP = loadSLMNP()
-if (!SLMNP) return
+if (!SLMNP) {
+    ERR("SLMNP could not be loaded. Exiting.")
+    return
+}
+
+// Open log file (non-fatal if it fails)
+try {
+    logFile   = resolveLogsFile(project, "ReqRelCopier")
+    logWriter = new PrintWriter(new FileWriter(logFile))
+    // CSV header
+    logWriter.println('"Status","FromID","FromName","ToID","ToName","RelationshipType"')
+    logWriter.flush()
+    INFO("Logging to CSV file: ${logFile.absolutePath}")
+} catch (Throwable t) {
+    logWriter = null
+    WARN("Unable to open log file for writing: ${t}. Continuing without CSV logging.")
+}
+
+// Helper to ensure logWriter is closed on any early exit
+def closeLog = {
+    if (logWriter != null) {
+        logWriter.flush()
+        logWriter.close()
+        logWriter = null
+    }
+}
+
 
 // SysML profile / stereotypes
 def sysml = SysMLProfile.getInstance(project)
@@ -226,160 +435,108 @@ def relStereos = [
 
 
 // =========================================================================================
-// PICK FROM / TO / SCOPE
+// PICK FROM / TO / SCOPE (via SLMNP)
 // =========================================================================================
-LOG("Opening FROM picker…")
+INFO("Opening FROM picker…")
 def fromSel = SLMNP.pick("Select FROM Root", "Pick the top requirement container for FROM")
 if (!fromSel) {
     WARN("Canceled at FROM picker.")
+    closeLog()
     return
 }
 def fromRoot = fromSel.element
+INFO("FROM root selected: ${fromRoot?.name ?: fromRoot}")
 
-LOG("Opening TO picker…")
+INFO("Opening TO picker…")
 def toSel = SLMNP.pick("Select TO Root", "Pick the top requirement container for TO")
 if (!toSel) {
     WARN("Canceled at TO picker.")
+    closeLog()
     return
 }
 def toRoot = toSel.element
+INFO("TO root selected: ${toRoot?.name ?: toRoot}")
 
-LOG("Opening RELATIONSHIP SCOPE picker…")
+INFO("Opening RELATIONSHIP SCOPE picker…")
 def scopeSel = SLMNP.pick("Select Relationship Scope", "Pick the container holding the relationships to duplicate")
 if (!scopeSel) {
     WARN("Canceled at SCOPE picker.")
+    closeLog()
     return
 }
 def relScope = scopeSel.element
+INFO("Scope selected: ${relScope?.name ?: relScope}")
 
 
 // =========================================================================================
-// DRY RUN + RELATIONSHIP TYPE MODALS
+// DRY RUN + RELATIONSHIP TYPE MODALS (ReqRelSwitcher-style)
 // =========================================================================================
-def DRY_RUN = askDryRun()
-LOG("DRY_RUN = ${DRY_RUN}")
+DRY_RUN = askDryRun()
+INFO("DRY_RUN = ${DRY_RUN}")
 
 def enabledRelTypes = askRelTypes()
 if (!enabledRelTypes || enabledRelTypes.isEmpty()) {
     WARN("No relationship types selected; exiting.")
+    closeLog()
     return
 }
-LOG("Enabled relationship types: " + enabledRelTypes.join(", "))
-
-def enabledRelStereos = relStereos.findAll { k, v -> enabledRelTypes.contains(k) && v != null }
+INFO("Enabled relationship types: " + enabledRelTypes.join(", "))
 
 
 // =========================================================================================
 // GATHER REQUIREMENTS AND PAIR FROM→TO BY NAME
 // =========================================================================================
-LOG("Gathering FROM requirements…")
+INFO("Gathering FROM requirements…")
 def fromReqs = gatherReqs(fromRoot, reqStereo)
 
-LOG("Gathering TO requirements…")
+INFO("Gathering TO requirements…")
 def toReqs = gatherReqs(toRoot, reqStereo)
 
-LOG("FROM requirement count = ${fromReqs.size()}")
-LOG("TO   requirement count = ${toReqs.size()}")
+INFO("FROM requirement count = ${fromReqs.size()}")
+INFO("TO   requirement count = ${toReqs.size()}")
 
 // Build pairs map: FROM Requirement → TO Requirement
-def pairs = [:]   // key: Element (FROM), value: Element (TO)
+def pairs = [:] as LinkedHashMap<Element, Element>
 fromReqs.each { name, fromReq ->
     def toReq = toReqs[name]
     if (toReq != null) {
         pairs[fromReq] = toReq
+    } else {
+        // Log Ignored: no TO requirement found for this FROM requirement
+        logCsvRow(logWriter, "Ignored", fromReq, null, null)
+        ignoredCount++
     }
 }
 
-LOG("Paired FROM→TO requirements (by name) = ${pairs.size()}")
+INFO("Paired FROM→TO requirements (by name) = ${pairs.size()}")
+
+if (pairs.isEmpty()) {
+    WARN("No matching TO requirements (by name) for any FROM requirement. Exiting.")
+    closeLog()
+    return
+}
 
 
 // =========================================================================================
 // COLLECT RELATIONSHIPS UNDER SCOPE
 // =========================================================================================
-LOG("Collecting relationships under SCOPE…")
+INFO("Collecting relationships under SCOPE…")
 def allRels = collectRelationships(relScope)
-LOG("Relationships in scope = ${allRels.size()}")
+INFO("Relationships in scope = ${allRels.size()}")
 
 
-// =========================================================================================
-// DUPLICATE RELATIONSHIPS (NO REWIRING)
-// =========================================================================================
+/*******************************************************************************************
+ * DUPLICATE RELATIONSHIPS (NO REWIRING, WITH DUPLICATE SUPPRESSION)
+ *******************************************************************************************/
 def mem  = ModelElementsManager.getInstance()
 def sess = SessionManager.getInstance()
 
-int wouldDuplicate = 0
-int actualDuplicate = 0
-
-// First pass (for dry-run logging + candidate count)
-allRels.each { rel ->
-
-    if (!hasWantedStereo(rel, enabledRelStereos)) return
-
-    def suppliers = rel.getSupplier().toList()
-    def clients   = rel.getClient().toList()
-
-    def matchFrom  = null
-    def matchTo    = null
-    def fromIsSupplier = false
-    def fromIsClient   = false
-
-    suppliers.each { s ->
-        if (pairs.containsKey(s) && matchFrom == null) {
-            matchFrom      = s
-            matchTo        = pairs[s]
-            fromIsSupplier = true
-        }
-    }
-    clients.each { c ->
-        if (pairs.containsKey(c) && matchFrom == null) {
-            matchFrom    = c
-            matchTo      = pairs[c]
-            fromIsClient = true
-        }
-    }
-
-    if (!matchFrom || !matchTo) return
-
-    def otherEnds = []
-    if (fromIsSupplier) {
-        otherEnds.addAll(clients)
-    }
-    else if (fromIsClient) {
-        otherEnds.addAll(suppliers)
-    }
-
-    def typeName = getRelTypeName(rel, relStereos, enabledRelTypes)
-    def otherStr = otherEnds.collect { it?.name ?: "(unnamed)" }.join(", ")
-
-    LOG("Would duplicate ${typeName}: FROM=${matchFrom.name} → TO=${matchTo.name}, other end(s)=[${otherStr}]")
-    wouldDuplicate++
-}
-
-LOG("Candidate relationships found = ${wouldDuplicate}")
-
-if (wouldDuplicate == 0) {
-    LOG("No relationships matched the selected types + FROM/TO requirement pairing. No changes made.")
-    return
-}
-
-if (DRY_RUN) {
-    LOG("DRY RUN complete. Would duplicate = ${wouldDuplicate}. No changes made.")
-    return
-}
-
-// REAL RUN: create parallel relationships
-sess.createSession("ReqRelSwitcher – duplicate FROM→TO")
+sess.createSession("ReqRelCopier – duplicate FROM→TO")
 
 try {
     allRels.each { rel ->
 
-        if (!hasWantedStereo(rel, enabledRelStereos)) return
-
-        def owner = rel.getOwner()
-        if (owner == null || !owner.isEditable()) {
-            WARN("Skipping relationship with non-editable owner: ${rel}")
-            return
-        }
+        if (!hasWantedStereo(rel, enabledRelTypes, relStereos)) return
 
         def suppliers = rel.getSupplier().toList()
         def clients   = rel.getClient().toList()
@@ -406,47 +563,94 @@ try {
 
         if (!matchFrom || !matchTo) return
 
-        // Create new Abstraction under the same owner
-        def newRel = project.getElementsFactory().createAbstractionInstance()
-        mem.addElement(newRel, owner)
-
-        // Copy name if present
-        if (rel instanceof NamedElement) {
-            newRel.setName(rel.getName())
-        }
-
-        // Copy endpoints from original
-        suppliers.each { s -> newRel.getSupplier().add(s) }
-        clients.each   { c -> newRel.getClient().add(c) }
-
-        // Swap FROM requirement to TO requirement on the correct side
-        if (fromIsSupplier) {
-            newRel.getSupplier().remove(matchFrom)
-            newRel.getSupplier().add(matchTo)
-        }
-        else if (fromIsClient) {
-            newRel.getClient().remove(matchFrom)
-            newRel.getClient().add(matchTo)
-        }
-
-        // Copy all stereotypes from original relationship
-        def applied = StereotypesHelper.getStereotypes(rel)
-        applied?.each { st ->
-            StereotypesHelper.addStereotype(newRel, st)
-        }
-
         def typeName = getRelTypeName(rel, relStereos, enabledRelTypes)
-        LOG("Duplicated ${typeName}: FROM=${matchFrom.name} → TO=${matchTo.name}")
-        actualDuplicate++
+        candidateCount++
+
+        def owner = rel.getOwner()
+        if (owner == null || !owner.isEditable()) {
+            WARN("Skipping relationship with non-editable owner: ${rel}")
+            return
+        }
+
+        // Duplicate-suppression check
+        if (hasExistingDuplicateRel(
+                rel,
+                owner,
+                suppliers,
+                clients,
+                matchFrom,
+                matchTo,
+                fromIsSupplier,
+                fromIsClient,
+                relStereos,
+                enabledRelTypes
+        )) {
+            // Skipped – relationship already exists on TO requirement
+            logCsvRow(logWriter, "Skipped", matchFrom, matchTo, typeName)
+            skippedCount++
+            return
+        }
+
+        // At this point, we'd create a new relationship (unless DRY_RUN)
+        if (!DRY_RUN) {
+            def newRel = project.getElementsFactory().createAbstractionInstance()
+            mem.addElement(newRel, owner)
+
+            // Copy name if present
+            if (rel instanceof NamedElement) {
+                newRel.setName(rel.getName())
+            }
+
+            // Copy endpoints from original
+            suppliers.each { s -> newRel.getSupplier().add(s) }
+            clients.each   { c -> newRel.getClient().add(c) }
+
+            // Swap FROM requirement to TO requirement on the correct side
+            if (fromIsSupplier) {
+                newRel.getSupplier().remove(matchFrom)
+                newRel.getSupplier().add(matchTo)
+            }
+            else if (fromIsClient) {
+                newRel.getClient().remove(matchFrom)
+                newRel.getClient().add(matchTo)
+            }
+
+            // Copy all stereotypes from original relationship
+            def applied = StereotypesHelper.getStereotypes(rel)
+            applied?.each { st ->
+                StereotypesHelper.addStereotype(newRel, st)
+            }
+        }
+
+        // Copied – either actually created or would be (in DRY_RUN)
+        logCsvRow(logWriter, "Copied", matchFrom, matchTo, typeName)
+        copiedCount++
     }
 
-    LOG("Actual duplicated relationships = ${actualDuplicate}")
     sess.closeSession()
 }
 catch (Throwable t) {
     ERR("Exception during duplication: ${t}")
     try { sess.cancelSession() } catch (Throwable ignore) {}
 }
+finally {
+    INFO("Candidate relationships considered = ${candidateCount}")
+    INFO("Ignored (no TO requirement found) = ${ignoredCount}")
+    INFO("Skipped (relationship already existed) = ${skippedCount}")
+    INFO("Copied (or would be, in DRY_RUN) = ${copiedCount}")
 
-LOG("=== ReqRelSwitcher COMPLETE (FROM→TO duplicator) ===")
+    if (logFile != null && logWriter != null) {
+        INFO("CSV log file: ${logFile.absolutePath}")
+    } else {
+        WARN("No CSV log file was written.")
+    }
+
+    if (logWriter != null) {
+        logWriter.flush()
+        logWriter.close()
+        logWriter = null
+    }
+}
+
+INFO("=== ReqRelCopier COMPLETE (FROM→TO duplicator) END ===")
 return
