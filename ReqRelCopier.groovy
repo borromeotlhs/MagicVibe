@@ -118,7 +118,8 @@ def logCsvRow = { PrintWriter writer,
                   String status,
                   Element fromReq,
                   Element toReq,
-                  String relType ->
+                  String relType,
+                  Collection<Element> relatedElements ->
 
     if (writer == null) return
 
@@ -128,13 +129,23 @@ def logCsvRow = { PrintWriter writer,
     def toId     = toReq?.getID() ?: ""
     def toName   = (toReq instanceof NamedElement) ? (toReq.name ?: "") : ""
 
+    def relatedIds = relatedElements?.collect { it?.getID() ?: "" }?.findAll { it }?.join(";") ?: ""
+    def relatedQualifiedNames = relatedElements?.collect { elem ->
+        if (elem instanceof NamedElement) {
+            return elem.qualifiedName ?: (elem.name ?: "")
+        }
+        return ""
+    }?.findAll { it }?.join(";") ?: ""
+
     def vals = [
         csvEscape(status),
         csvEscape(fromId),
         csvEscape(fromName),
         csvEscape(toId),
         csvEscape(toName),
-        csvEscape(relType ?: "")
+        csvEscape(relType ?: ""),
+        csvEscape(relatedIds),
+        csvEscape(relatedQualifiedNames)
     ]
 
     def line = vals.collect { '"' + it + '"' }.join(",")
@@ -462,7 +473,7 @@ try {
     logFile   = resolveLogsFile(project, "ReqRelCopier")
     logWriter = new PrintWriter(new FileWriter(logFile))
     // CSV header
-    logWriter.println('"Status","FromID","FromName","ToID","ToName","RelationshipType"')
+    logWriter.println('"Status","FromID","FromName","ToID","ToName","RelationshipType","RelatedElementIDs","RelatedElementQualifiedNames"')
     logWriter.flush()
     INFO("Logging to CSV file: ${logFile.absolutePath}")
 } catch (Throwable t) {
@@ -565,7 +576,7 @@ fromReqs.each { name, fromReq ->
         pairs[fromReq] = toReq
     } else {
         // Log Ignored: no TO requirement found for this FROM requirement
-        logCsvRow(logWriter, "Ignored", fromReq, null, null)
+        logCsvRow(logWriter, "Ignored", fromReq, null, null, [])
         ignoredCount++
     }
 }
@@ -616,6 +627,10 @@ try {
                 def otherSuppliers = suppliers.findAll { it != fromNamed }
                 def otherClients   = clients.findAll { it != fromNamed }
 
+                def relatedElements = new LinkedHashSet<Element>()
+                relatedElements.addAll(otherSuppliers)
+                relatedElements.addAll(otherClients)
+
                 // Duplicate-suppression check:
                 // Look at TO's dependencies, regardless of their owner
                 if (hasExistingDuplicateOnTo(
@@ -628,7 +643,7 @@ try {
                         relStereos
                 )) {
                     // Skipped – relationship already exists on TO requirement
-                    logCsvRow(logWriter, "Skipped", fromNamed, toNamed, typeName)
+                    logCsvRow(logWriter, "Skipped", fromNamed, toNamed, typeName, relatedElements)
                     skippedCount++
                     return
                 }
@@ -666,7 +681,7 @@ try {
                 }
 
                 // Copied – either actually created or would be (in DRY_RUN)
-                logCsvRow(logWriter, "Copied", fromNamed, toNamed, typeName)
+                logCsvRow(logWriter, "Copied", fromNamed, toNamed, typeName, relatedElements)
                 copiedCount++
             }
         }
