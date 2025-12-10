@@ -161,21 +161,33 @@ def resolveLogsFile = { Project project, String suffix ->
         }
     }
 
-    // Determine project base name from project file if possible, else use project name
+    // Determine project base name from project location or file if possible, else use project name
     String projectBaseName = "Project"
     try {
-        def f = project.getFile()  // might not exist; wrapped in try/catch
-        if (f instanceof File) {
-            projectBaseName = f.getName()
+        def primaryProject = project?.getPrimaryProject()
+
+        // Use the actual project location when available (covers local + TWC downloads)
+        def locPath = primaryProject?.getLocation()?.getPath()
+        if (locPath) {
+            projectBaseName = new File(locPath).getName()
             int dotIdx = projectBaseName.lastIndexOf('.')
             if (dotIdx > 0) {
                 projectBaseName = projectBaseName.substring(0, dotIdx)
             }
         } else {
-            projectBaseName = project.getName() ?: "Project"
+            def f = project?.getFile()  // might not exist; wrapped in try/catch
+            if (f instanceof File) {
+                projectBaseName = f.getName()
+                int dotIdx = projectBaseName.lastIndexOf('.')
+                if (dotIdx > 0) {
+                    projectBaseName = projectBaseName.substring(0, dotIdx)
+                }
+            } else {
+                projectBaseName = primaryProject?.getName() ?: project?.getName() ?: "Project"
+            }
         }
     } catch (Throwable ignored) {
-        projectBaseName = project.getName() ?: "Project"
+        projectBaseName = project?.getName() ?: "Project"
     }
 
     def sdf = new SimpleDateFormat("yyyyMMdd_HHmmss")
