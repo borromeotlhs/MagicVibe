@@ -3,7 +3,7 @@ Both SysMLv1.7b and other (generally textually defined) concrete syntaxes are to
 
 The work downstream to set up a proper vibe code environment for qualified and experienced Model Based Systems Engineers assumes this.  Otherwise, your assumptions will tend to reveal your ignorance to specifications you should know fairly well.  This pollutes the intended context, forcing the user to fight battles on two fronts at the expense of code quality and potential one-shot prompt execution.  
 
-Implicit to this vibe code setup is that you also inject your baseline corpus of understanding regarding your work environment and MagicDraw APIs.
+Implicit to this vibe code setup is that you also inject your baseline corpus of understanding regarding your work environment and MagicDraw APIs.  MagicVibe is a generalized template based off MagicDrawv2022xR2 within a TWC Server hosting environment.
 
 ## Formalized Syntax
 It is difficult enough to do Systems Engieering.  Model Based Systems Engineering formalized how we think and talk about systems so humans could understand each other.  In the same way, it is difficult to get LLM-based Agentic AIs to create working code from plain language specifications.  MagicVibe is intended to offer assertions in order to constrain how an LLM produces what humans would call an acceptable result.
@@ -25,11 +25,14 @@ Load a zip of the contents of this repo to your LLM or agent, including this REA
 Generate assumptions:
 Try to make code, and when your code fails, collect the claims that your LLM states as to why it failed in a file called assumptions.
 Generate assertions and testCases:
-Iterate through the assumptions with your LLM, and ask it if it still believes its previous position, and if so, have it generate code in support of its position.  If you are aware that there is another, possibly better approach, prompt it to make a test case in support of your contra-indication.  Save all tests whether they log pass or fail, iterating on them only to get them to run.  Their intended purpose is to serve as a corpus for valid desing patterns.
-Remember that the tests will be called by AssertionsTester, and that it will expect these tests to be in the test directory.  This simplifies test code generation, as you can even get context rot doing enough test cases on ChatGPT5.1.
+Iterate through the assumptions with your LLM, and ask it if it still believes its previous position, and if so, have it generate code in support of its position.  If you are aware that there is another, possibly better approach, prompt it to make a test case in support of your contra-indication.  Save all tests whether they log pass or fail, iterating on them only to get them to run.  Their intended purpose is to serve as a corpus for valid design patterns.
+Remember that the tests will be called by AssertionsTester, and that it will expect these tests to be in the test directory.  This simplifies test code generation, as you can even get context rot doing enough test cases on ChatGPT5.1-Thinking.
 
 ### ToDo:
 Come up with a better way to load lib and test directory files.  Groovy could import packages, but I don't want to go that far and veer into full-blown Java plugin development.
+
 Find some more consistent documentation on NoMagic/Dassault's macro execution environment so I don't have to probe its limitations/mechanisms/best practices in this way.
+
+Modify this to run with [OpenMBEE](https://github.com/Open-MBEE) for further automation.
 
 [^1]: This repository and its contributors are releasing this work under GPLv3 to ensure that works derived from its structure and purpose are communally available.  It is not to say that generated code that utilizes this repository are not also GPLv3, but it is also not not GPLv3.  IANAL.  
