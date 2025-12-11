@@ -47,6 +47,8 @@ import javax.swing.JCheckBox
 import java.io.File
 import java.io.FileWriter
 import java.io.PrintWriter
+import java.text.SimpleDateFormat
+import java.util.Date
 
 
 // =========================================================================================
@@ -169,7 +171,12 @@ def resolveLogsFile = { Project project, String suffix ->
         }
     } catch (Throwable ignored) {}
 
-    def fileName = "${projectBaseName}_${suffix}.csv"
+    String timestamp = null
+    try {
+        timestamp = new SimpleDateFormat("yyyyMMdd_HHmmss").format(new Date())
+    } catch (Throwable ignored) {}
+
+    def fileName = timestamp ? "${projectBaseName}_${suffix}_${timestamp}.csv" : "${projectBaseName}_${suffix}.csv"
     return new File(logsDir, fileName)
 }
 
