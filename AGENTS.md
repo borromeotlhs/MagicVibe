@@ -51,3 +51,32 @@ List<Element> getUsedProjectRoots(Project proj) {
 - **A13 – ResourcesManager unavailability**: Reinforces that `Project.getResourcesManager()` and related resource manager APIs are absent and must be avoided.
 
 If you discover new constraints or verified behaviors in WORK_ENV, update this file so future contributors inherit accurate guidance.
+
+## Logging helper for MagicDraw notification window
+Use the following Groovy snippet to send messages to the MagicDraw notification window (falling back to stdout if the UI log is unavailable):
+
+```groovy
+import com.nomagic.magicdraw.core.Application
+// =========================================================================================
+// LOGGING HELPERS (GUILog + console)
+// =========================================================================================
+def guiLog = { String text ->
+    try {
+        Application.getInstance().getGUILog().log(text)
+    } catch (Throwable t) {
+        println text
+    }
+}
+
+def INFO = { String msg ->
+    guiLog("[ReqRelCopier] ${msg}")
+}
+
+def WARN = { String msg ->
+    guiLog("[ReqRelCopier][WARN] ${msg}")
+}
+
+def ERR = { String msg ->
+    guiLog("[ReqRelCopier][ERROR] ${msg}")
+}
+```
