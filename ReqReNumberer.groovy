@@ -11,8 +11,9 @@ import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement
  *  Recursively processes a user-selected scope via SLMNP picker
  ********************************************************************/
 
-def LOG(msg) { Application.getInstance().getGUILog().showMessage(msg) }
-def ERR(msg) { Application.getInstance().getGUILog().showError(msg) }
+def guiLog = Application.getInstance().getGUILog()
+def LOG(msg) { guiLog.log("[ReqReNumberer] ${msg}") }
+def ERR(msg) { guiLog.log("[ReqReNumberer][ERROR] ${msg}") }
 
 def project = Application.getInstance().getProject()
 if (!project) {
@@ -125,6 +126,28 @@ def resolveRequirementStereoAndIdTag = { Element e ->
     return null
 }
 
+def toTrimmedString = { val ->
+    if (val == null) return null
+    if (val instanceof Collection) {
+        for (def item : val) {
+            def str = toTrimmedString(item)
+            if (str) return str
+        }
+        return null
+    }
+    try {
+        if (val.respondsTo("getValue")) {
+            def inner = val.value
+            def innerStr = inner != null ? inner.toString().trim() : null
+            if (innerStr) return innerStr
+        }
+    } catch (Exception ignored) {
+        // fall through to default toString handling
+    }
+    def s = val.toString()?.trim()
+    return s ? s : null
+}
+
 def isRequirement = { Element e ->
     try {
         return requirementStereos.any { reqSt -> reqSt && StereotypesHelper.hasStereotypeOrDerived(e, reqSt) }
@@ -146,7 +169,7 @@ walk = { Element e ->
             if (StereotypesHelper.hasStereotypeOrDerived(e, objPropStereo)) {
                 try {
                     def jamaVal = StereotypesHelper.getStereotypePropertyValue(e, objPropStereo, jamaIdTag?.name)
-                    jamaStr = jamaVal ? jamaVal.toString().trim() : null
+                    jamaStr = toTrimmedString(jamaVal)
                 } catch (Exception ex) {
                     LOG("Skipped '${elemLabel(e)}' (error reading jamaId: ${ex.message})")
                 }
