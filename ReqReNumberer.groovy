@@ -74,9 +74,12 @@ if (!objPropStereo) {
 
 def findTag = { stereo, String... candidates ->
     if (!stereo) return null
-    def lower = candidates.collect { it?.toLowerCase() }
-    stereo.getOwnedAttribute().find { attr ->
-        attr?.name && attr.name.toLowerCase() in lower
+    def names = candidates.findAll { it }.collect { it.toLowerCase() }
+    // Include derived properties because SysML Requirement «id» may not be a direct owned attribute
+    def props = (StereotypesHelper.getPropertiesWithDerived(stereo) ?: []) + (stereo.getOwnedAttribute() ?: [])
+    props.find { attr ->
+        def nm = attr?.name?.toLowerCase()
+        nm && nm in names
     }
 }
 
