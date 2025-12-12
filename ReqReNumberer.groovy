@@ -100,11 +100,28 @@ if (!jamaIdTag) {
 // ====================================================================
 def updated = 0
 
+def isRequirement = { Element e ->
+    try {
+        if (reqStereo && StereotypesHelper.hasStereotypeOrDerived(e, reqStereo)) {
+            return true
+        }
+    } catch (Exception ex) {
+        LOG("Stereotype check via instance failed for '${e?.name ?: "<unnamed>"}': ${ex.message}")
+    }
+
+    try {
+        return StereotypesHelper.hasStereotypeOrDerived(e, "Requirement")
+    } catch (Exception ex) {
+        LOG("Skipping '${e?.name ?: "<unnamed>"}' (requirement stereotype check error: ${ex.message})")
+        return false
+    }
+}
+
 def walk
 walk = { Element e ->
     if (e == null) return
 
-    if (reqStereo && StereotypesHelper.hasStereotypeOrDerived(e, reqStereo)) {
+    if (isRequirement(e)) {
         def jamaVal = e.getValue(objPropStereo, jamaIdTag)
         def jamaStr = jamaVal?.toString()?.trim()
 
