@@ -3,6 +3,7 @@ import com.nomagic.magicdraw.openapi.uml.SessionManager
 import com.nomagic.magicdraw.sysml.util.SysMLProfile
 import com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement
 
 /********************************************************************
  *  Requirement Re-numberer
@@ -96,6 +97,14 @@ if (!jamaIdTag) {
 // ====================================================================
 def updated = 0
 
+def elemLabel = { Element e ->
+    if (e instanceof NamedElement) {
+        def nm = e.name
+        return nm && nm.trim() ? nm : "<unnamed>"
+    }
+    return e?.toString() ?: "<null>"
+}
+
 def resolveRequirementStereoAndIdTag = { Element e ->
     def stereosToCheck = []
 
@@ -120,7 +129,7 @@ def isRequirement = { Element e ->
     try {
         return requirementStereos.any { reqSt -> reqSt && StereotypesHelper.hasStereotypeOrDerived(e, reqSt) }
     } catch (Exception ex) {
-        LOG("Skipping '${e?.name ?: "<unnamed>"}' (requirement stereotype check error: ${ex.message})")
+        LOG("Skipping '${elemLabel(e)}' (requirement stereotype check error: ${ex.message})")
         return false
     }
 }
@@ -139,14 +148,14 @@ walk = { Element e ->
         }
 
         if (!reqPair) {
-            LOG("Skipped '${e.name ?: "<unnamed>"}' (no requirement ID tag found)")
+            LOG("Skipped '${elemLabel(e)}' (no requirement ID tag found)")
         } else if (jamaStr) {
             def (reqStereoUsed, reqIdTag) = reqPair
             StereotypesHelper.setStereotypePropertyValue(e, reqStereoUsed, reqIdTag, jamaStr)
-            LOG("Set Requirement ID for '${e.name ?: "<unnamed>"}' to '${jamaStr}'")
+            LOG("Set Requirement ID for '${elemLabel(e)}' to '${jamaStr}'")
             updated++
         } else {
-            LOG("Skipped '${e.name ?: "<unnamed>"}' (no jamaId value or ObjectProperties stereotype not applied)")
+            LOG("Skipped '${elemLabel(e)}' (no jamaId value or ObjectProperties stereotype not applied)")
         }
     }
 
