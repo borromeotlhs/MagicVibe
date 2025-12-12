@@ -118,8 +118,14 @@ def resolveRequirementStereoAndIdTag = { Element e ->
         }
     }
 
-    // Also consider any other applied stereotypes for an «id» tag
-    stereosToCheck.addAll(StereotypesHelper.getStereotypesWithDerived(e) ?: [])
+    // Also consider any other applied stereotypes for an «id» tag using available helper
+    def appliedStereos = []
+    try {
+        appliedStereos = StereotypesHelper.getStereotypes(e) ?: []
+    } catch (Exception ex) {
+        LOG("Could not read applied stereotypes for '${elemLabel(e)}': ${ex.message}")
+    }
+    stereosToCheck.addAll(appliedStereos)
 
     for (def st : stereosToCheck.unique()) {
         def tag = findTag(st, "id", "Id", "ID")
