@@ -120,7 +120,7 @@ def resolveRequirementStereoAndIdTag = { Element e ->
 
     for (def st : stereosToCheck.unique()) {
         def tag = findTag(st, "id", "Id", "ID")
-        if (tag) return [st, tag]
+        if (tag) return [st, tag?.name]
     }
     return null
 }
@@ -138,31 +138,47 @@ def walk
 walk = { Element e ->
     if (e == null) return
 
-    if (isRequirement(e)) {
-        def reqPair = resolveRequirementStereoAndIdTag(e)
-        def jamaStr = null
+    try {
+        if (isRequirement(e)) {
+            def reqPair = resolveRequirementStereoAndIdTag(e)
+            def jamaStr = null
 
-        if (StereotypesHelper.hasStereotypeOrDerived(e, objPropStereo)) {
-            def jamaVal = e.getValue(objPropStereo, jamaIdTag)
-            jamaStr = jamaVal?.toString()?.trim()
-        }
+            if (StereotypesHelper.hasStereotypeOrDerived(e, objPropStereo)) {
+                try {
+                    def jamaVal = StereotypesHelper.getStereotypePropertyValue(e, objPropStereo, jamaIdTag?.name)
+                    jamaStr = jamaVal ? jamaVal.toString().trim() : null
+                } catch (Exception ex) {
+                    LOG("Skipped '${elemLabel(e)}' (error reading jamaId: ${ex.message})")
+                }
+            }
 
-        if (!reqPair) {
-            LOG("Skipped '${elemLabel(e)}' (no requirement ID tag found)")
-        } else if (jamaStr) {
-            def (reqStereoUsed, reqIdTag) = reqPair
-            StereotypesHelper.setStereotypePropertyValue(e, reqStereoUsed, reqIdTag, jamaStr)
-            LOG("Set Requirement ID for '${elemLabel(e)}' to '${jamaStr}'")
-            updated++
-        } else {
-            LOG("Skipped '${elemLabel(e)}' (no jamaId value or ObjectProperties stereotype not applied)")
+            if (!reqPair) {
+                LOG("Skipped '${elemLabel(e)}' (no requirement ID tag found)")
+            } else if (jamaStr) {
+                def (reqStereoUsed, reqIdTagName) = reqPair
+                try {
+                    StereotypesHelper.setStereotypePropertyValue(e, reqStereoUsed, reqIdTagName, jamaStr)
+                    LOG("Set Requirement ID for '${elemLabel(e)}' to '${jamaStr}'")
+                    updated++
+                } catch (Exception ex) {
+                    LOG("Skipped '${elemLabel(e)}' (error setting ID: ${ex.message})")
+                }
+            } else {
+                LOG("Skipped '${elemLabel(e)}' (no jamaId value or ObjectProperties stereotype not applied)")
+            }
         }
+    } catch (Exception ex) {
+        LOG("Skipping '${elemLabel(e)}' (processing error: ${ex.message})")
     }
 
-    e.ownedElement?.each { child ->
-        if (child instanceof Element) {
-            walk(child as Element)
+    try {
+        e.ownedElement?.each { child ->
+            if (child instanceof Element) {
+                walk(child as Element)
+            }
         }
+    } catch (Exception ex) {
+        LOG("Skipping children of '${elemLabel(e)}' (ownedElement error: ${ex.message})")
     }
 }
 
