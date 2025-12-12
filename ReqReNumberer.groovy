@@ -65,6 +65,8 @@ LOG("Scope selected: ${scope?.name ?: scope}")
 // ====================================================================
 def sysml = SysMLProfile.getInstance(project)
 def reqStereo = sysml.getRequirement()
+def abstractReqStereo = StereotypesHelper.getStereotype(project, "AbstractRequirement")
+def requirementStereos = [abstractReqStereo, reqStereo].findAll { it }
 
 def objPropStereo = StereotypesHelper.getStereotype(project, "ObjectProperties")
 if (!objPropStereo) {
@@ -83,12 +85,6 @@ def findTag = { stereo, String... candidates ->
     }
 }
 
-def reqIdTag = findTag(reqStereo, "id", "Id", "ID")
-if (!reqIdTag) {
-    ERR("Requirement ID tag not found on Requirement stereotype.")
-    return
-}
-
 def jamaIdTag = findTag(objPropStereo, "jamaId", "jamaID")
 if (!jamaIdTag) {
     ERR("jamaId tag not found on ObjectProperties stereotype.")
@@ -100,17 +96,18 @@ if (!jamaIdTag) {
 // ====================================================================
 def updated = 0
 
+def resolveRequirementStereoAndIdTag = { Element e ->
+    def stereos = (StereotypesHelper.getStereotypesWithDerived(e) ?: []) + requirementStereos
+    for (def st : stereos) {
+        def tag = findTag(st, "id", "Id", "ID")
+        if (tag) return [st, tag]
+    }
+    return null
+}
+
 def isRequirement = { Element e ->
     try {
-        if (reqStereo && StereotypesHelper.hasStereotypeOrDerived(e, reqStereo)) {
-            return true
-        }
-    } catch (Exception ex) {
-        LOG("Stereotype check via instance failed for '${e?.name ?: "<unnamed>"}': ${ex.message}")
-    }
-
-    try {
-        return StereotypesHelper.hasStereotypeOrDerived(e, "Requirement")
+        return resolveRequirementStereoAndIdTag(e) != null
     } catch (Exception ex) {
         LOG("Skipping '${e?.name ?: "<unnamed>"}' (requirement stereotype check error: ${ex.message})")
         return false
@@ -122,11 +119,15 @@ walk = { Element e ->
     if (e == null) return
 
     if (isRequirement(e)) {
+        def reqPair = resolveRequirementStereoAndIdTag(e)
         def jamaVal = e.getValue(objPropStereo, jamaIdTag)
         def jamaStr = jamaVal?.toString()?.trim()
 
-        if (jamaStr) {
-            StereotypesHelper.setStereotypePropertyValue(e, reqStereo, reqIdTag, jamaStr)
+        if (!reqPair) {
+            LOG("Skipped '${e.name ?: "<unnamed>"}' (no requirement ID tag found)")
+        } else if (jamaStr) {
+            def (reqStereoUsed, reqIdTag) = reqPair
+            StereotypesHelper.setStereotypePropertyValue(e, reqStereoUsed, reqIdTag, jamaStr)
             LOG("Set Requirement ID for '${e.name ?: "<unnamed>"}' to '${jamaStr}'")
             updated++
         } else {
