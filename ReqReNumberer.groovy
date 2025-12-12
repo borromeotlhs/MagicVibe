@@ -97,8 +97,19 @@ if (!jamaIdTag) {
 def updated = 0
 
 def resolveRequirementStereoAndIdTag = { Element e ->
-    def stereos = (StereotypesHelper.getStereotypesWithDerived(e) ?: []) + requirementStereos
-    for (def st : stereos) {
+    def stereosToCheck = []
+
+    // First look for explicitly applied requirement stereotypes
+    requirementStereos.each { reqSt ->
+        if (reqSt && StereotypesHelper.hasStereotypeOrDerived(e, reqSt)) {
+            stereosToCheck << reqSt
+        }
+    }
+
+    // Also consider any other applied stereotypes for an «id» tag
+    stereosToCheck.addAll(StereotypesHelper.getStereotypesWithDerived(e) ?: [])
+
+    for (def st : stereosToCheck.unique()) {
         def tag = findTag(st, "id", "Id", "ID")
         if (tag) return [st, tag]
     }
@@ -107,7 +118,7 @@ def resolveRequirementStereoAndIdTag = { Element e ->
 
 def isRequirement = { Element e ->
     try {
-        return resolveRequirementStereoAndIdTag(e) != null
+        return requirementStereos.any { reqSt -> reqSt && StereotypesHelper.hasStereotypeOrDerived(e, reqSt) }
     } catch (Exception ex) {
         LOG("Skipping '${e?.name ?: "<unnamed>"}' (requirement stereotype check error: ${ex.message})")
         return false
@@ -120,8 +131,12 @@ walk = { Element e ->
 
     if (isRequirement(e)) {
         def reqPair = resolveRequirementStereoAndIdTag(e)
-        def jamaVal = e.getValue(objPropStereo, jamaIdTag)
-        def jamaStr = jamaVal?.toString()?.trim()
+        def jamaStr = null
+
+        if (StereotypesHelper.hasStereotypeOrDerived(e, objPropStereo)) {
+            def jamaVal = e.getValue(objPropStereo, jamaIdTag)
+            jamaStr = jamaVal?.toString()?.trim()
+        }
 
         if (!reqPair) {
             LOG("Skipped '${e.name ?: "<unnamed>"}' (no requirement ID tag found)")
@@ -131,7 +146,7 @@ walk = { Element e ->
             LOG("Set Requirement ID for '${e.name ?: "<unnamed>"}' to '${jamaStr}'")
             updated++
         } else {
-            LOG("Skipped '${e.name ?: "<unnamed>"}' (no jamaId value)")
+            LOG("Skipped '${e.name ?: "<unnamed>"}' (no jamaId value or ObjectProperties stereotype not applied)")
         }
     }
 
