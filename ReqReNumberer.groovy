@@ -134,8 +134,9 @@ def resolveRequirementStereoAndIdTag = { Element e ->
     return null
 }
 
-def toTrimmedString = { val ->
+def toTrimmedString(val) {
     if (val == null) return null
+
     if (val instanceof Collection) {
         for (def item : val) {
             def str = toTrimmedString(item)
@@ -143,6 +144,7 @@ def toTrimmedString = { val ->
         }
         return null
     }
+
     try {
         if (val.respondsTo("getValue")) {
             def inner = val.value
@@ -152,6 +154,7 @@ def toTrimmedString = { val ->
     } catch (Exception ignored) {
         // fall through to default toString handling
     }
+
     def s = val.toString()?.trim()
     return s ? s : null
 }
