@@ -4,6 +4,7 @@ import com.nomagic.magicdraw.sysml.util.SysMLProfile
 import com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement
+import groovy.transform.Field
 
 /********************************************************************
  *  Requirement Re-numberer
@@ -11,9 +12,10 @@ import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement
  *  Recursively processes a user-selected scope via SLMNP picker
  ********************************************************************/
 
+@Field
 def guiLog = Application.getInstance().getGUILog()
-def LOG(msg) { guiLog.log("[ReqReNumberer] ${msg}") }
-def ERR(msg) { guiLog.log("[ReqReNumberer][ERROR] ${msg}") }
+def LOG = { msg -> guiLog.log("[ReqReNumberer] ${msg}") }
+def ERR = { msg -> guiLog.log("[ReqReNumberer][ERROR] ${msg}") }
 
 def project = Application.getInstance().getProject()
 if (!project) {
