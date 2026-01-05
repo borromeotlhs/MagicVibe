@@ -830,10 +830,10 @@ try {
             } catch (Throwable ignored) {}
 
             if (!scopeEditable) {
-                if (!rels.isEmpty()) {
-                    rels.each { candidateCount++ }
-                    logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "Relationship owner is null or read-only; skipping FeatureImpact copy")
-                    skippedCount += rels.size()
+                rels.each {
+                    candidateCount++
+                    logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "Scope not editable; skipping FeatureImpact copy")
+                    skippedCount++
                 }
                 return
             }
@@ -851,7 +851,11 @@ try {
                 def clients   = rel.getClient()?.toList() ?: []
 
                 boolean touchesFrom = suppliers.contains(fromReq) || clients.contains(fromReq)
-                if (!touchesFrom) return
+                if (!touchesFrom) {
+                    logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "Relationship does not touch source requirement; skipping")
+                    skippedCount++
+                    return
+                }
 
                 // Reuse the existing feature / system endpoints; only FROM requirement
                 // and ExistenceVariationPoint rules are remapped. Everything else stays
@@ -900,7 +904,8 @@ try {
                     }
                 }
 
-                logCsvRow(logWriter, "Copied", fromReq, toReq, "FeatureImpact", "Relationship duplicated")
+                def detail = DRY_RUN ? "Relationship would be duplicated (DRY_RUN)" : "Relationship duplicated"
+                logCsvRow(logWriter, "Copied", fromReq, toReq, "FeatureImpact", detail)
                 copiedCount++
             }
         }
