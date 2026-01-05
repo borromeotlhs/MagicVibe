@@ -820,12 +820,25 @@ try {
         }
 
         // 4) FeatureImpact relationships
-        if (copyFeatureImpact && featureImpactStereo) {
+        if (copyFeatureImpact) {
             def rels = collectFeatureImpactRels(fromReq, featureImpactStereo)
             def logFeatureImpactResult = { String status, String detail ->
                 logCsvRow(logWriter, status, fromReq, toReq, "FeatureImpact", detail)
                 if ("Copied".equals(status)) copiedCount++
                 if ("Skipped".equals(status)) skippedCount++
+            }
+
+            if (!featureImpactStereo) {
+                if (!rels.isEmpty()) {
+                    rels.each { candidateCount++ }
+                }
+                logFeatureImpactResult("Skipped", "FeatureImpact stereotype missing; nothing copied")
+                return
+            }
+
+            if (rels.isEmpty()) {
+                logFeatureImpactResult("Skipped", "No FeatureImpact relationships found on FROM requirement")
+                return
             }
 
             boolean scopeEditable = (relScope != null)
