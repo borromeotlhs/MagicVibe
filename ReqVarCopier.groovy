@@ -727,9 +727,24 @@ try {
                 } catch (Throwable ignored) {}
 
                 if (newEpvp == null) {
-                    logCsvRow(logWriter, "Skipped", fromReq, toReq, "EPVP", "Unable to copy EPVP element: ${key}")
-                    skippedCount++
-                    return
+                    try {
+                        def allEpvps = collectEpvpElements(toReq, epvpStereo)
+                        def fresh = allEpvps.findAll { !toEpvpsExisting.contains(it) }
+                        if (!fresh.isEmpty()) {
+                            newEpvp = fresh.iterator().next()
+                        } else {
+                            def keyMatch = allEpvps.find { epvpKey(it) == key }
+                            if (keyMatch) {
+                                newEpvp = keyMatch
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+
+                    if (newEpvp == null) {
+                        logCsvRow(logWriter, "Skipped", fromReq, toReq, "EPVP", "Unable to copy EPVP element: ${key}")
+                        skippedCount++
+                        return
+                    }
                 }
 
                 try {
