@@ -36,6 +36,9 @@ import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Relationship
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Constraint
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Property
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Slot
+import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.ValueSpecification
 
 import groovy.lang.GroovyShell
 
@@ -243,6 +246,34 @@ def loadSLMNP = {
 
 
 // =========================================================================================
+/** UTIL: Resolve stereotype by name across all applied profiles */
+// =========================================================================================
+def resolveStereoAcrossAppliedProfiles = { Project proj, String stereoName ->
+    if (!proj || !stereoName) return null
+
+    def stereo = null
+    try {
+        def profiles = StereotypesHelper.getAllProfiles(proj) ?: []
+        stereo = profiles.collect { p ->
+            try {
+                return StereotypesHelper.getStereotype(proj, stereoName, p)
+            } catch (Throwable ignored) {
+                return null
+            }
+        }.find { it != null }
+    } catch (Throwable ignored) {}
+
+    if (stereo == null) {
+        try {
+            stereo = StereotypesHelper.getStereotype(proj, stereoName)
+        } catch (Throwable ignored) {}
+    }
+
+    return stereo
+}
+
+
+// =========================================================================================
 /** UTIL: Recursively gather requirements under a root, keyed by name */
 // =========================================================================================
 def gatherReqs = { Element element, reqStereo ->
@@ -275,6 +306,93 @@ def collectFeatureImpactRels = { Element req, featureImpactStereo ->
         rel instanceof Relationship && featureImpactStereo &&
                 StereotypesHelper.hasStereotypeOrDerived(rel, featureImpactStereo)
     }
+}
+
+
+// =========================================================================================
+/** UTIL: Collect ElementPropertyVariationPoint-tagged elements for a requirement */
+// =========================================================================================
+def collectEpvpElements = { Element req, epvpStereo ->
+    def epvps = [] as LinkedHashSet<Element>
+    if (!req || !epvpStereo) return epvps.toList()
+
+    def consider = { Element candidate ->
+        if (candidate && StereotypesHelper.hasStereotypeOrDerived(candidate, epvpStereo)) {
+            epvps << candidate
+        }
+    }
+
+    try {
+        req.getOwnedElement()?.each { consider(it) }
+    } catch (Throwable ignored) {}
+    try {
+        req.getOwnedAttribute()?.each { Property p ->
+            consider(p)
+            try {
+                consider(p.getDefaultValue())
+            } catch (Throwable ignored) {}
+        }
+    } catch (Throwable ignored) {}
+    try {
+        req.getSlot()?.each { Slot s ->
+            consider(s)
+            try {
+                s.getValue()?.each { v ->
+                    if (v instanceof Element) {
+                        consider(v)
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+    } catch (Throwable ignored) {}
+
+    return epvps.toList()
+}
+
+
+// =========================================================================================
+/** UTIL: Remap references on copied EPVP elements */
+// =========================================================================================
+def remapEpvpElementReferences
+remapEpvpElementReferences = { Element epvpEl, Closure<Element> remapTarget ->
+    if (!(epvpEl instanceof Element) || remapTarget == null) return
+
+    try {
+        if (epvpEl.respondsTo("getType") && epvpEl.respondsTo("setType")) {
+            def t = epvpEl.getType()
+            def nt = remapTarget(t)
+            if (nt != null && nt != t) {
+                epvpEl.setType(nt)
+            }
+        }
+    } catch (Throwable ignored) {}
+
+    try {
+        if (epvpEl instanceof Property) {
+            def dv = epvpEl.getDefaultValue()
+            if (dv instanceof Element) {
+                remapEpvpElementReferences(dv, remapTarget)
+            }
+        }
+    } catch (Throwable ignored) {}
+
+    try {
+        if (epvpEl instanceof Slot) {
+            epvpEl.getValue()?.each { val ->
+                if (val instanceof Element) {
+                    remapEpvpElementReferences(val, remapTarget)
+                }
+            }
+        }
+    } catch (Throwable ignored) {}
+
+    try {
+        if (epvpEl instanceof ValueSpecification) {
+            epvpEl.getOwnedElement()?.each { oe ->
+                remapEpvpElementReferences(oe, remapTarget)
+            }
+        }
+    } catch (Throwable ignored) {}
 }
 
 
@@ -351,6 +469,7 @@ def reqStereo = sysml.getRequirement()
 def variabilityProfile = StereotypesHelper.getProfile(project, "Variability Profile")
 def existenceStereo = StereotypesHelper.getStereotype(project, "ExistenceVariationPoint", variabilityProfile)
 def featureImpactStereo = StereotypesHelper.getStereotype(project, "FeatureImpact", variabilityProfile)
+def epvpStereo = resolveStereoAcrossAppliedProfiles(project, "ElementPropertyVariationPoint")
 def featureStereo = StereotypesHelper.getStereotype(project, "Feature", variabilityProfile)
 def invisibleStereo = StereotypesHelper.getStereotype(project, "InvisibleStereotype", "MagicDraw Profile")
 
@@ -436,6 +555,7 @@ try {
         }
 
         def ruleMap = [:] as LinkedHashMap<Element, Element> // FROM ExistenceVariationPoint → TO counterpart
+        def epvpMap = [:] as LinkedHashMap<Element, Element> // FROM EPVP elements → TO counterparts
 
         // 1) InvisibleStereotype
         if (invisibleStereo && StereotypesHelper.hasStereotypeOrDerived(fromReq, invisibleStereo)) {
@@ -524,20 +644,145 @@ try {
 
             if (newRule != null) {
                 ruleMap[rule] = newRule
+
+                try {
+                    def constrained = []
+                    try { rule.getConstrainedElement()?.each { constrained << it } } catch (Throwable ignored) {}
+
+                    def remapTarget = { Element ep ->
+                        if (ep == null) return ep
+                        if (ep == fromReq) return toReq
+                        if (ruleMap.containsKey(ep)) return ruleMap[ep]
+                        if (epvpMap.containsKey(ep) && epvpMap[ep] != null) return epvpMap[ep]
+                        return ep
+                    }
+
+                    def remapped = constrained.collect { remapTarget(it) }.findAll { it != null }
+                    try { newRule.getConstrainedElement()?.clear() } catch (Throwable ignored) {}
+                    remapped.each { Element target ->
+                        try { newRule.getConstrainedElement().add(target) } catch (Throwable ignored) {}
+                    }
+                } catch (Throwable t) {
+                    ERR("Failed to copy constrained elements for rule '${ruleName}': ${t}")
+                }
             }
 
             logCsvRow(logWriter, "Copied", fromReq, toReq, "OwnedRule", "ExistenceVariationPoint: ${ruleName}")
             copiedCount++
         }
 
+        // 3b) ElementPropertyVariationPoint artifacts
+        if (epvpStereo) {
+            def epvpKey = { Element el ->
+                def cls = el?.getClass()?.getSimpleName() ?: "Element"
+                def nm = (el instanceof NamedElement) ? (el.name ?: "") : ""
+                return "${cls}::${nm}"
+            }
+
+            def fromEpvps = collectEpvpElements(fromReq, epvpStereo)
+            def toEpvpsExisting = collectEpvpElements(toReq, epvpStereo)
+
+            fromEpvps.each { Element epvpEl ->
+                candidateCount++
+                def key = epvpKey(epvpEl)
+
+                def existing = toEpvpsExisting.find { epvpKey(it) == key }
+                if (existing) {
+                    logCsvRow(logWriter, "Skipped", fromReq, toReq, "EPVP", "Existing EPVP element on TO: ${key}")
+                    skippedCount++
+                    epvpMap[epvpEl] = existing
+                    return
+                }
+
+                if (DRY_RUN) {
+                    logCsvRow(logWriter, "Copied", fromReq, toReq, "EPVP", "DRY_RUN – would copy ${key}")
+                    copiedCount++
+                    return
+                }
+
+                Element newEpvp = null
+                def before = new LinkedHashSet<Element>()
+                try { toReq.getOwnedElement()?.each { before << it } } catch (Throwable ignored) {}
+                try { toReq.getOwnedAttribute()?.each { before << it } } catch (Throwable ignored) {}
+                try { toReq.getSlot()?.each { before << it } } catch (Throwable ignored) {}
+
+                try {
+                    CopyPasting.copyPasteElement(epvpEl, toReq, false)
+                } catch (Throwable t) {
+                    ERR("Failed to copy EPVP element '${key}': ${t}")
+                }
+
+                try {
+                    def after = new LinkedHashSet<Element>()
+                    toReq.getOwnedElement()?.each { after << it }
+                    toReq.getOwnedAttribute()?.each { after << it }
+                    toReq.getSlot()?.each { after << it }
+                    def added = after.findAll { el ->
+                        !before.contains(el) && StereotypesHelper.hasStereotypeOrDerived(el, epvpStereo)
+                    }
+                    if (!added.isEmpty()) {
+                        newEpvp = added.iterator().next()
+                    }
+                } catch (Throwable ignored) {}
+
+                if (newEpvp == null) {
+                    logCsvRow(logWriter, "Skipped", fromReq, toReq, "EPVP", "Unable to copy EPVP element: ${key}")
+                    skippedCount++
+                    return
+                }
+
+                try {
+                    if (!StereotypesHelper.hasStereotypeOrDerived(newEpvp, epvpStereo)) {
+                        StereotypesHelper.addStereotype(newEpvp, epvpStereo)
+                    }
+                } catch (Throwable ignored) {}
+
+                try {
+                    StereotypesHelper.copyStereotypeProperties(epvpEl, newEpvp, epvpStereo, true)
+                } catch (Throwable ignored) {}
+
+                def remapTarget = { Element ep ->
+                    if (ep == null) return ep
+                    if (ep == fromReq) return toReq
+                    if (ruleMap.containsKey(ep)) return ruleMap[ep]
+                    if (epvpMap.containsKey(ep) && epvpMap[ep] != null) return epvpMap[ep]
+                    return ep
+                }
+                remapEpvpElementReferences(newEpvp, remapTarget)
+
+                epvpMap[epvpEl] = newEpvp
+                toEpvpsExisting << newEpvp
+
+                logCsvRow(logWriter, "Copied", fromReq, toReq, "EPVP", "ElementPropertyVariationPoint: ${key}")
+                copiedCount++
+            }
+        }
+
         // 4) FeatureImpact relationships
         if (copyFeatureImpact && featureImpactStereo) {
             def rels = collectFeatureImpactRels(fromReq, featureImpactStereo)
+            boolean scopeEditable = (relScope != null)
+            try {
+                if (scopeEditable) {
+                    scopeEditable = project.isElementEditable(relScope)
+                }
+            } catch (Throwable ignored) {}
+
+            if (!scopeEditable) {
+                if (!rels.isEmpty()) {
+                    rels.each { candidateCount++ }
+                    logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "Relationship owner is null or read-only; skipping FeatureImpact copy")
+                    skippedCount += rels.size()
+                }
+                return
+            }
+
             rels.each { Relationship rel ->
                 candidateCount++
                 def remapEndpoint = { Element ep ->
                     if (ep == fromReq) return toReq
                     if (ruleMap.containsKey(ep)) return ruleMap[ep]
+                    if (epvpMap.containsKey(ep) && epvpMap[ep] != null) return epvpMap[ep]
                     return ep
                 }
 
@@ -560,19 +805,37 @@ try {
                 }
 
                 if (!DRY_RUN) {
-                    def newRel = project.getElementsFactory().createDependencyInstance()
-                    mem.addElement(newRel, relScope)
+                    Relationship newRel = null
+                    try {
+                        newRel = project.getElementsFactory().createDependencyInstance()
+                        mem.addElement(newRel, relScope)
 
-                    new LinkedHashSet<Element>(targetSuppliers).each { s -> newRel.getSupplier().add(s) }
-                    new LinkedHashSet<Element>(targetClients).each   { c -> newRel.getClient().add(c) }
+                        if (newRel.getOwner() == null) {
+                            try { ModelElementsManager.getInstance().removeElement(newRel) } catch (Throwable ignored) {}
+                            logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "New dependency has no owner; skipping to avoid corruption")
+                            skippedCount++
+                            return
+                        }
 
-                    if (rel instanceof NamedElement) {
-                        newRel.setName(rel.getName())
-                    }
+                        new LinkedHashSet<Element>(targetSuppliers).each { s -> newRel.getSupplier().add(s) }
+                        new LinkedHashSet<Element>(targetClients).each   { c -> newRel.getClient().add(c) }
 
-                    def applied = StereotypesHelper.getStereotypes(rel)
-                    applied?.each { st ->
-                        StereotypesHelper.addStereotype(newRel, st)
+                        if (rel instanceof NamedElement) {
+                            newRel.setName(rel.getName())
+                        }
+
+                        def applied = StereotypesHelper.getStereotypes(rel)
+                        applied?.each { st ->
+                            StereotypesHelper.addStereotype(newRel, st)
+                        }
+                    } catch (Throwable t) {
+                        if (newRel != null) {
+                            try { ModelElementsManager.getInstance().removeElement(newRel) } catch (Throwable ignored) {}
+                        }
+                        ERR("Failed to duplicate FeatureImpact for ${fromReq?.name} → ${toReq?.name}: ${t}")
+                        logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "Error duplicating relationship: ${t}")
+                        skippedCount++
+                        return
                     }
                 }
 
