@@ -822,6 +822,12 @@ try {
         // 4) FeatureImpact relationships
         if (copyFeatureImpact && featureImpactStereo) {
             def rels = collectFeatureImpactRels(fromReq, featureImpactStereo)
+            def logFeatureImpactResult = { String status, String detail ->
+                logCsvRow(logWriter, status, fromReq, toReq, "FeatureImpact", detail)
+                if ("Copied".equals(status)) copiedCount++
+                if ("Skipped".equals(status)) skippedCount++
+            }
+
             boolean scopeEditable = (relScope != null)
             try {
                 if (scopeEditable) {
@@ -832,8 +838,7 @@ try {
             if (!scopeEditable) {
                 rels.each {
                     candidateCount++
-                    logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "Scope not editable; skipping FeatureImpact copy")
-                    skippedCount++
+                    logFeatureImpactResult("Skipped", "Scope not editable; skipping FeatureImpact copy")
                 }
                 return
             }
@@ -852,8 +857,7 @@ try {
 
                 boolean touchesFrom = suppliers.contains(fromReq) || clients.contains(fromReq)
                 if (!touchesFrom) {
-                    logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "Relationship does not touch source requirement; skipping")
-                    skippedCount++
+                    logFeatureImpactResult("Skipped", "Relationship does not touch source requirement; skipping")
                     return
                 }
 
@@ -864,8 +868,7 @@ try {
                 def targetClients   = clients.collect { remapEndpoint(it) }
 
                 if (hasDuplicateFeatureImpact(toReq, targetSuppliers, targetClients, featureImpactStereo)) {
-                    logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "Existing relationship found")
-                    skippedCount++
+                    logFeatureImpactResult("Skipped", "Existing relationship found")
                     return
                 }
 
@@ -877,8 +880,7 @@ try {
 
                         if (newRel.getOwner() == null) {
                             try { ModelElementsManager.getInstance().removeElement(newRel) } catch (Throwable ignored) {}
-                            logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "New dependency has no owner; skipping to avoid corruption")
-                            skippedCount++
+                            logFeatureImpactResult("Skipped", "New dependency has no owner; skipping to avoid corruption")
                             return
                         }
 
@@ -898,15 +900,13 @@ try {
                             try { ModelElementsManager.getInstance().removeElement(newRel) } catch (Throwable ignored) {}
                         }
                         ERR("Failed to duplicate FeatureImpact for ${fromReq?.name} → ${toReq?.name}: ${t}")
-                        logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "Error duplicating relationship: ${t}")
-                        skippedCount++
+                        logFeatureImpactResult("Skipped", "Error duplicating relationship: ${t}")
                         return
                     }
                 }
 
                 def detail = DRY_RUN ? "Relationship would be duplicated (DRY_RUN)" : "Relationship duplicated"
-                logCsvRow(logWriter, "Copied", fromReq, toReq, "FeatureImpact", detail)
-                copiedCount++
+                logFeatureImpactResult("Copied", detail)
             }
         }
     }
