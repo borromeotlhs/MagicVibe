@@ -753,30 +753,44 @@ try {
 
                 try {
                     def constrained = new LinkedHashSet<Element>()
-                    try { epvpEl.getConstrainedElement()?.each { constrained << it } } catch (Throwable ignored) {}
+                    boolean hadCollectionError = false
+                    def consider = { val ->
+                        if (val instanceof Element) {
+                            constrained << val
+                        }
+                    }
+                    try {
+                        epvpEl.getConstrainedElement()?.each { consider(it) }
+                    } catch (Throwable t) {
+                        hadCollectionError = true
+                    }
+                    try {
+                        def slot = StereotypesHelper.getSlot(epvpEl, epvpStereo, "constrainedElement")
+                        slot?.getValue()?.each { consider(it) }
+                    } catch (Throwable t) {
+                        hadCollectionError = true
+                    }
                     try {
                         def stereoVals = StereotypesHelper.getStereotypePropertyValue(epvpEl, epvpStereo, "constrainedElement")
-                        stereoVals?.each { val ->
-                            if (val instanceof Element) {
-                                constrained << val
-                            }
-                        }
-                    } catch (Throwable ignored) {}
+                        stereoVals?.each { consider(it) }
+                    } catch (Throwable t) {
+                        hadCollectionError = true
+                    }
                     try {
                         def modelVals = ModelHelper.getStereotypePropertyValue(epvpEl, epvpStereo, "constrainedElement")
-                        modelVals?.each { val ->
-                            if (val instanceof Element) {
-                                constrained << val
-                            }
-                        }
-                    } catch (Throwable ignored) {}
+                        modelVals?.each { consider(it) }
+                    } catch (Throwable t) {
+                        hadCollectionError = true
+                    }
 
-                    if (!constrained.isEmpty()) {
-                        def remapped = constrained.collect { remapTarget(it) }.findAll { it != null }
-                        try { newEpvp.getConstrainedElement()?.clear() } catch (Throwable ignored) {}
-                        remapped.each { Element target ->
-                            try { newEpvp.getConstrainedElement().add(target) } catch (Throwable ignored) {}
-                        }
+                    if (constrained.isEmpty() && hadCollectionError) {
+                        WARN("No constrained elements collected for EPVP element '${key}' (errors reading source constrained elements)")
+                    }
+
+                    def remapped = constrained.collect { remapTarget(it) }.findAll { it != null }
+                    try { newEpvp.getConstrainedElement()?.clear() } catch (Throwable ignored) {}
+                    remapped.each { Element target ->
+                        try { newEpvp.getConstrainedElement().add(target) } catch (Throwable ignored) {}
                     }
                 } catch (Throwable t) {
                     ERR("Failed to copy constrained elements for EPVP element '${key}': ${t}")
