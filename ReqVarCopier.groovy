@@ -845,6 +845,7 @@ try {
 
             rels.each { Relationship rel ->
                 candidateCount++
+                boolean proceed = true
                 def remapEndpoint = { Element ep ->
                     if (ep == fromReq) return toReq
                     if (ruleMap.containsKey(ep)) return ruleMap[ep]
@@ -858,55 +859,57 @@ try {
                 boolean touchesFrom = suppliers.contains(fromReq) || clients.contains(fromReq)
                 if (!touchesFrom) {
                     logFeatureImpactResult("Skipped", "Relationship does not touch source requirement; skipping")
-                    return
+                    proceed = false
                 }
 
-                // Reuse the existing feature / system endpoints; only FROM requirement
-                // and ExistenceVariationPoint rules are remapped. Everything else stays
-                // as-is to avoid copying or cloning features that already exist.
-                def targetSuppliers = suppliers.collect { remapEndpoint(it) }
-                def targetClients   = clients.collect { remapEndpoint(it) }
+                if (proceed) {
+                    // Reuse the existing feature / system endpoints; only FROM requirement
+                    // and ExistenceVariationPoint rules are remapped. Everything else stays
+                    // as-is to avoid copying or cloning features that already exist.
+                    def targetSuppliers = suppliers.collect { remapEndpoint(it) }
+                    def targetClients   = clients.collect { remapEndpoint(it) }
 
-                if (hasDuplicateFeatureImpact(toReq, targetSuppliers, targetClients, featureImpactStereo)) {
-                    logFeatureImpactResult("Skipped", "Existing relationship found")
-                    return
-                }
+                    if (hasDuplicateFeatureImpact(toReq, targetSuppliers, targetClients, featureImpactStereo)) {
+                        logFeatureImpactResult("Skipped", "Existing relationship found")
+                        proceed = false
+                    } else if (!DRY_RUN) {
+                        Relationship newRel = null
+                        try {
+                            newRel = project.getElementsFactory().createDependencyInstance()
+                            mem.addElement(newRel, relScope)
 
-                if (!DRY_RUN) {
-                    Relationship newRel = null
-                    try {
-                        newRel = project.getElementsFactory().createDependencyInstance()
-                        mem.addElement(newRel, relScope)
+                            if (newRel.getOwner() == null) {
+                                try { ModelElementsManager.getInstance().removeElement(newRel) } catch (Throwable ignored) {}
+                                logFeatureImpactResult("Skipped", "New dependency has no owner; skipping to avoid corruption")
+                                proceed = false
+                            } else {
+                                new LinkedHashSet<Element>(targetSuppliers).each { s -> newRel.getSupplier().add(s) }
+                                new LinkedHashSet<Element>(targetClients).each   { c -> newRel.getClient().add(c) }
 
-                        if (newRel.getOwner() == null) {
-                            try { ModelElementsManager.getInstance().removeElement(newRel) } catch (Throwable ignored) {}
-                            logFeatureImpactResult("Skipped", "New dependency has no owner; skipping to avoid corruption")
-                            return
+                                if (rel instanceof NamedElement) {
+                                    newRel.setName(rel.getName())
+                                }
+
+                                def applied = StereotypesHelper.getStereotypes(rel)
+                                applied?.each { st ->
+                                    StereotypesHelper.addStereotype(newRel, st)
+                                }
+                            }
+                        } catch (Throwable t) {
+                            if (newRel != null) {
+                                try { ModelElementsManager.getInstance().removeElement(newRel) } catch (Throwable ignored) {}
+                            }
+                            ERR("Failed to duplicate FeatureImpact for ${fromReq?.name} → ${toReq?.name}: ${t}")
+                            logFeatureImpactResult("Skipped", "Error duplicating relationship: ${t}")
+                            proceed = false
                         }
+                    }
 
-                        new LinkedHashSet<Element>(targetSuppliers).each { s -> newRel.getSupplier().add(s) }
-                        new LinkedHashSet<Element>(targetClients).each   { c -> newRel.getClient().add(c) }
-
-                        if (rel instanceof NamedElement) {
-                            newRel.setName(rel.getName())
-                        }
-
-                        def applied = StereotypesHelper.getStereotypes(rel)
-                        applied?.each { st ->
-                            StereotypesHelper.addStereotype(newRel, st)
-                        }
-                    } catch (Throwable t) {
-                        if (newRel != null) {
-                            try { ModelElementsManager.getInstance().removeElement(newRel) } catch (Throwable ignored) {}
-                        }
-                        ERR("Failed to duplicate FeatureImpact for ${fromReq?.name} → ${toReq?.name}: ${t}")
-                        logFeatureImpactResult("Skipped", "Error duplicating relationship: ${t}")
-                        return
+                    if (proceed) {
+                        def detail = DRY_RUN ? "Relationship would be duplicated (DRY_RUN)" : "Relationship duplicated"
+                        logFeatureImpactResult("Copied", detail)
                     }
                 }
-
-                def detail = DRY_RUN ? "Relationship would be duplicated (DRY_RUN)" : "Relationship duplicated"
-                logFeatureImpactResult("Copied", detail)
             }
         }
     }
