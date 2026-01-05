@@ -31,6 +31,7 @@ import com.nomagic.magicdraw.openapi.uml.SessionManager
 import com.nomagic.magicdraw.openapi.uml.ModelElementsManager
 import com.nomagic.magicdraw.sysml.util.SysMLProfile
 import com.nomagic.magicdraw.copypaste.CopyPasting
+import com.nomagic.uml2.ext.jmi.helpers.ModelHelper
 import com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement
@@ -726,9 +727,24 @@ try {
                 } catch (Throwable ignored) {}
 
                 if (newEpvp == null) {
-                    logCsvRow(logWriter, "Skipped", fromReq, toReq, "EPVP", "Unable to copy EPVP element: ${key}")
-                    skippedCount++
-                    return
+                    try {
+                        def allEpvps = collectEpvpElements(toReq, epvpStereo)
+                        def fresh = allEpvps.findAll { !toEpvpsExisting.contains(it) }
+                        if (!fresh.isEmpty()) {
+                            newEpvp = fresh.iterator().next()
+                        } else {
+                            def keyMatch = allEpvps.find { epvpKey(it) == key }
+                            if (keyMatch) {
+                                newEpvp = keyMatch
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+
+                    if (newEpvp == null) {
+                        logCsvRow(logWriter, "Skipped", fromReq, toReq, "EPVP", "Unable to copy EPVP element: ${key}")
+                        skippedCount++
+                        return
+                    }
                 }
 
                 try {
@@ -751,15 +767,45 @@ try {
                 remapEpvpElementReferences(newEpvp, remapTarget)
 
                 try {
-                    def constrained = []
-                    try { epvpEl.getConstrainedElement()?.each { constrained << it } } catch (Throwable ignored) {}
-
-                    if (!constrained.isEmpty()) {
-                        def remapped = constrained.collect { remapTarget(it) }.findAll { it != null }
-                        try { newEpvp.getConstrainedElement()?.clear() } catch (Throwable ignored) {}
-                        remapped.each { Element target ->
-                            try { newEpvp.getConstrainedElement().add(target) } catch (Throwable ignored) {}
+                    def constrained = new LinkedHashSet<Element>()
+                    boolean hadCollectionError = false
+                    def consider = { val ->
+                        if (val instanceof Element) {
+                            constrained << val
                         }
+                    }
+                    try {
+                        epvpEl.getConstrainedElement()?.each { consider(it) }
+                    } catch (Throwable t) {
+                        hadCollectionError = true
+                    }
+                    try {
+                        def slot = StereotypesHelper.getSlot(epvpEl, epvpStereo, "constrainedElement")
+                        slot?.getValue()?.each { consider(it) }
+                    } catch (Throwable t) {
+                        hadCollectionError = true
+                    }
+                    try {
+                        def stereoVals = StereotypesHelper.getStereotypePropertyValue(epvpEl, epvpStereo, "constrainedElement")
+                        stereoVals?.each { consider(it) }
+                    } catch (Throwable t) {
+                        hadCollectionError = true
+                    }
+                    try {
+                        def modelVals = ModelHelper.getStereotypePropertyValue(epvpEl, epvpStereo, "constrainedElement")
+                        modelVals?.each { consider(it) }
+                    } catch (Throwable t) {
+                        hadCollectionError = true
+                    }
+
+                    if (constrained.isEmpty() && hadCollectionError) {
+                        WARN("No constrained elements collected for EPVP element '${key}' (errors reading source constrained elements)")
+                    }
+
+                    def remapped = constrained.collect { remapTarget(it) }.findAll { it != null }
+                    try { newEpvp.getConstrainedElement()?.clear() } catch (Throwable ignored) {}
+                    remapped.each { Element target ->
+                        try { newEpvp.getConstrainedElement().add(target) } catch (Throwable ignored) {}
                     }
                 } catch (Throwable t) {
                     ERR("Failed to copy constrained elements for EPVP element '${key}': ${t}")
