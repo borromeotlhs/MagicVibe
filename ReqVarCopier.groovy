@@ -31,6 +31,7 @@ import com.nomagic.magicdraw.openapi.uml.SessionManager
 import com.nomagic.magicdraw.openapi.uml.ModelElementsManager
 import com.nomagic.magicdraw.sysml.util.SysMLProfile
 import com.nomagic.magicdraw.copypaste.CopyPasting
+import com.nomagic.uml2.ext.jmi.helpers.ModelHelper
 import com.nomagic.uml2.ext.jmi.helpers.StereotypesHelper
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.NamedElement
@@ -751,8 +752,24 @@ try {
                 remapEpvpElementReferences(newEpvp, remapTarget)
 
                 try {
-                    def constrained = []
+                    def constrained = new LinkedHashSet<Element>()
                     try { epvpEl.getConstrainedElement()?.each { constrained << it } } catch (Throwable ignored) {}
+                    try {
+                        def stereoVals = StereotypesHelper.getStereotypePropertyValue(epvpEl, epvpStereo, "constrainedElement")
+                        stereoVals?.each { val ->
+                            if (val instanceof Element) {
+                                constrained << val
+                            }
+                        }
+                    } catch (Throwable ignored) {}
+                    try {
+                        def modelVals = ModelHelper.getStereotypePropertyValue(epvpEl, epvpStereo, "constrainedElement")
+                        modelVals?.each { val ->
+                            if (val instanceof Element) {
+                                constrained << val
+                            }
+                        }
+                    } catch (Throwable ignored) {}
 
                     if (!constrained.isEmpty()) {
                         def remapped = constrained.collect { remapTarget(it) }.findAll { it != null }
