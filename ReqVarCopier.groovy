@@ -750,6 +750,21 @@ try {
                 }
                 remapEpvpElementReferences(newEpvp, remapTarget)
 
+                try {
+                    def constrained = []
+                    try { epvpEl.getConstrainedElement()?.each { constrained << it } } catch (Throwable ignored) {}
+
+                    if (!constrained.isEmpty()) {
+                        def remapped = constrained.collect { remapTarget(it) }.findAll { it != null }
+                        try { newEpvp.getConstrainedElement()?.clear() } catch (Throwable ignored) {}
+                        remapped.each { Element target ->
+                            try { newEpvp.getConstrainedElement().add(target) } catch (Throwable ignored) {}
+                        }
+                    }
+                } catch (Throwable t) {
+                    ERR("Failed to copy constrained elements for EPVP element '${key}': ${t}")
+                }
+
                 epvpMap[epvpEl] = newEpvp
                 toEpvpsExisting << newEpvp
 
