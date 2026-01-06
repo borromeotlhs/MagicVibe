@@ -36,6 +36,7 @@ this.metaClass = null
  *    Status values:
  *      Ignored – no TO requirement found for FROM requirement (logged once per unmatched FROM)
  *      Skipped – relationship already exists on TO requirement (any owner)
+ *      SkippedMissingSupplier / SkippedMissingClient – relationship endpoints incomplete
  *      Copied  – relationship created (or would be, in DRY_RUN)
  *******************************************************************************************/
 
@@ -79,6 +80,8 @@ int ignoredCount   = 0   // FROM req has no TO match
 int skippedCount   = 0   // relationship already exists on TO
 int copiedCount    = 0   // relationship created / would be created
 int candidateCount = 0   // relationships that matched FROM/TO + type (considered for duplication)
+int skippedMissingSupplierCount = 0 // relationship skipped because suppliers would be empty
+int skippedMissingClientCount   = 0 // relationship skipped because clients would be empty
 
 
 // =========================================================================================
@@ -398,13 +401,12 @@ def collectTypedRelsForRequirement = { NamedElement req,
 
 
 // =========================================================================================
-/**
+/** 
  * NEW UTIL: Check if an equivalent relationship already exists on the TO requirement,
  * regardless of the owner of that existing relationship.
  *
- *  - We build the target endpoint sets (suppliers/clients) using:
- *      otherSuppliers / otherClients + TO requirement on the same side
- *      that FROM occupied (supplier/client).
+ *  - Caller provides the full target endpoint sets (suppliers/clients) that would
+ *    be used for the new relationship (already including TO on FROM's side).
  *  - We then walk TO’s supplierDependency + clientDependency, and for each
  *    relationship with the same stereotype/type, we compare the endpoint sets.
  *
@@ -414,18 +416,13 @@ def collectTypedRelsForRequirement = { NamedElement req,
 // =========================================================================================
 def hasExistingDuplicateOnTo = { NamedElement toReq,
                                  String typeName,
-                                 List<Element> otherSuppliers,
-                                 List<Element> otherClients,
-                                 boolean toIsSupplier,
-                                 boolean toIsClient,
+                                 Collection<Element> targetSuppliers,
+                                 Collection<Element> targetClients,
                                  relStereoMap ->
 
     // Build the target end sets
-    def targetSupSet = new LinkedHashSet<Element>(otherSuppliers ?: [])
-    def targetCliSet = new LinkedHashSet<Element>(otherClients ?: [])
-
-    if (toIsSupplier) targetSupSet.add(toReq)
-    if (toIsClient)   targetCliSet.add(toReq)
+    def targetSupSet = new LinkedHashSet<Element>(targetSuppliers ?: [])
+    def targetCliSet = new LinkedHashSet<Element>(targetClients ?: [])
 
     // Collect all relationships that already touch TO (adjacency)
     def deps = []
@@ -631,15 +628,40 @@ try {
                 relatedElements.addAll(otherSuppliers)
                 relatedElements.addAll(otherClients)
 
+                def targetSuppliers = new LinkedHashSet<Element>(otherSuppliers ?: [])
+                def targetClients   = new LinkedHashSet<Element>(otherClients ?: [])
+
+                if (fromIsSupplier) {
+                    targetSuppliers.add(toNamed)
+                }
+                if (fromIsClient) {
+                    targetClients.add(toNamed)
+                }
+
+                if (targetSuppliers.isEmpty() || targetClients.isEmpty()) {
+                    def status = "SkippedMissingSupplier"
+                    if (targetSuppliers.isEmpty() && targetClients.isEmpty()) {
+                        status = "SkippedMissingSupplierClient"
+                    } else if (targetClients.isEmpty()) {
+                        status = "SkippedMissingClient"
+                    }
+                    if (targetSuppliers.isEmpty()) {
+                        skippedMissingSupplierCount++
+                    }
+                    if (targetClients.isEmpty()) {
+                        skippedMissingClientCount++
+                    }
+                    logCsvRow(logWriter, status, fromNamed, toNamed, typeName, relatedElements)
+                    return
+                }
+
                 // Duplicate-suppression check:
                 // Look at TO's dependencies, regardless of their owner
                 if (hasExistingDuplicateOnTo(
                         toNamed,
                         typeName,
-                        otherSuppliers,
-                        otherClients,
-                        fromIsSupplier,
-                        fromIsClient,
+                        targetSuppliers,
+                        targetClients,
                         relStereos
                 )) {
                     // Skipped – relationship already exists on TO requirement
@@ -661,17 +683,9 @@ try {
                         newRel.setName(rel.getName())
                     }
 
-                    // Copy all endpoints except FROM
-                    otherSuppliers.each { s -> newRel.getSupplier().add(s) }
-                    otherClients.each   { c -> newRel.getClient().add(c) }
-
-                    // Put TO on the same side as FROM was
-                    if (fromIsSupplier) {
-                        newRel.getSupplier().add(toNamed)
-                    }
-                    if (fromIsClient) {
-                        newRel.getClient().add(toNamed)
-                    }
+                    // Copy all validated endpoints
+                    newRel.getSupplier().addAll(targetSuppliers)
+                    newRel.getClient().addAll(targetClients)
 
                     // Copy all stereotypes from original relationship
                     def applied = StereotypesHelper.getStereotypes(rel)
@@ -697,6 +711,11 @@ finally {
     INFO("Candidate relationships considered (FROM adjacency) = ${candidateCount}")
     INFO("Ignored (no TO requirement found) = ${ignoredCount}")
     INFO("Skipped (relationship already existed on TO) = ${skippedCount}")
+    if (skippedMissingSupplierCount > 0 || skippedMissingClientCount > 0) {
+        WARN("Skipped due to missing suppliers = ${skippedMissingSupplierCount}; missing clients = ${skippedMissingClientCount}")
+    } else {
+        INFO("No relationships skipped due to missing suppliers or clients.")
+    }
     INFO("Copied (or would be, in DRY_RUN) = ${copiedCount}")
 
     if (logFile != null && logWriter != null) {
