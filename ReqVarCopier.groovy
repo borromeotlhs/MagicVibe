@@ -299,13 +299,20 @@ def gatherReqs = { Element element, reqStereo ->
 // =========================================================================================
 /** UTIL: Collect FeatureImpact dependencies adjacent to a requirement */
 // =========================================================================================
+def isFeatureImpactRel = { Relationship rel, featureImpactStereo ->
+    if (!(rel instanceof Relationship)) return false
+    if (featureImpactStereo) {
+        return StereotypesHelper.hasStereotypeOrDerived(rel, featureImpactStereo)
+    }
+    return StereotypesHelper.hasStereotypeOrDerived(rel, "FeatureImpact")
+}
+
 def collectFeatureImpactRels = { Element req, featureImpactStereo ->
     def rels = []
     try { req.getSupplierDependency()?.each { rels << it } } catch (Throwable ignored) {}
     try { req.getClientDependency()?.each { rels << it } } catch (Throwable ignored) {}
     return rels.findAll { rel ->
-        rel instanceof Relationship && featureImpactStereo &&
-                StereotypesHelper.hasStereotypeOrDerived(rel, featureImpactStereo)
+        isFeatureImpactRel(rel, featureImpactStereo)
     }
 }
 
@@ -414,8 +421,7 @@ def hasDuplicateFeatureImpact = { Element toReq,
     def cliTarget = new LinkedHashSet<Element>(targetCliSet ?: [])
 
     return deps.any { dep ->
-        if (!(dep instanceof Relationship)) return false
-        if (!featureImpactStereo || !StereotypesHelper.hasStereotypeOrDerived(dep, featureImpactStereo)) return false
+        if (!isFeatureImpactRel(dep, featureImpactStereo)) return false
 
         def supSet = new LinkedHashSet<Element>(dep.getSupplier()?.toList() ?: [])
         def cliSet = new LinkedHashSet<Element>(dep.getClient()?.toList() ?: [])
@@ -828,7 +834,7 @@ try {
                 if ("Skipped".equals(status)) skippedCount++
             }
 
-            if (!featureImpactStereo || rels.isEmpty()) return
+            if (rels.isEmpty()) return
 
             boolean scopeEditable = (relScope != null)
             try {
