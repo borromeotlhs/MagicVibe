@@ -828,18 +828,7 @@ try {
                 if ("Skipped".equals(status)) skippedCount++
             }
 
-            if (!featureImpactStereo) {
-                if (!rels.isEmpty()) {
-                    rels.each { candidateCount++ }
-                }
-                logFeatureImpactResult("Skipped", "FeatureImpact stereotype missing; nothing copied")
-                return
-            }
-
-            if (rels.isEmpty()) {
-                logFeatureImpactResult("Skipped", "No FeatureImpact relationships found on FROM requirement")
-                return
-            }
+            if (!featureImpactStereo || rels.isEmpty()) return
 
             boolean scopeEditable = (relScope != null)
             try {
