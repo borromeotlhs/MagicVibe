@@ -308,6 +308,7 @@ def isFeatureImpactRel = { Relationship rel, featureImpactStereo ->
 }
 
 def collectFeatureImpactRels = { Element req, featureImpactStereo ->
+    if (!(req instanceof Element)) return []
     def rels = []
     try { req.getSupplierDependency()?.each { rels << it } } catch (Throwable ignored) {}
     try { req.getClientDependency()?.each { rels << it } } catch (Throwable ignored) {}
@@ -678,6 +679,8 @@ try {
             copiedCount++
         }
 
+        def fromEpvpsForFeatureImpact = []
+
         // 3b) ElementPropertyVariationPoint artifacts
         if (epvpStereo) {
             def epvpKey = { Element el ->
@@ -687,6 +690,7 @@ try {
             }
 
             def fromEpvps = collectEpvpElements(fromReq, epvpStereo)
+            fromEpvpsForFeatureImpact = fromEpvps
             def toEpvpsExisting = collectEpvpElements(toReq, epvpStereo)
 
             fromEpvps.each { Element epvpEl ->
@@ -827,7 +831,19 @@ try {
 
         // 4) FeatureImpact relationships
         if (copyFeatureImpact) {
-            def rels = collectFeatureImpactRels(fromReq, featureImpactStereo)
+            def fiSources = [] as LinkedHashSet<Element>
+            fiSources << fromReq
+            fromRules.each { r -> if (r instanceof Element) fiSources << r }
+            fromEpvpsForFeatureImpact.each { e -> if (e instanceof Element) fiSources << e }
+
+            def relSet = [] as LinkedHashSet<Relationship>
+            fiSources.each { Element src ->
+                collectFeatureImpactRels(src, featureImpactStereo).each { Relationship rel ->
+                    relSet << rel
+                }
+            }
+
+            def rels = relSet.toList()
             def logFeatureImpactResult = { String status, String detail ->
                 logCsvRow(logWriter, status, fromReq, toReq, "FeatureImpact", detail)
                 if ("Copied".equals(status)) copiedCount++
