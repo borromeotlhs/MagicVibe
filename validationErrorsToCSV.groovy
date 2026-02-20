@@ -1,3 +1,4 @@
+this.metaClass = null
 import com.nomagic.magicdraw.core.Application
 import com.nomagic.magicdraw.core.Project
 import com.nomagic.magicdraw.annotation.AnnotationManager
