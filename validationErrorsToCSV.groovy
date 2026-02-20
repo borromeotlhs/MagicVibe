@@ -151,6 +151,24 @@ Element unwrapToElement(def target) {
     return null
 }
 
+
+String safeRuleName(def annotation) {
+    if (annotation == null) return ""
+    try {
+        if (annotation.metaClass?.respondsTo(annotation, "getRule")) {
+            def r = annotation.getRule()
+            if (r != null) {
+                if (r.metaClass?.respondsTo(r, "getName")) {
+                    def rn = r.getName()
+                    if (rn != null) return rn.toString()
+                }
+                return r.toString()
+            }
+        }
+    } catch (Throwable ignore) { }
+    return ""
+}
+
 String projectScopeLabel(Element e, Element primaryRoot, List<Element> usedRoots) {
     def root = getProjectRootForElement(e, primaryRoot, usedRoots)
     if (root == null) return ""
@@ -225,7 +243,7 @@ outFile.withWriter("UTF-8") { w ->
                 owner ? projectScopeLabel(owner, primaryRoot, usedRoots) : "",
                 e ? ownerChain(e) : "",
                 a?.getSeverity()?.toString() ?: "",
-                a?.getRule()?.getName()?.toString() ?: "",
+                safeRuleName(a),
                 a?.getKind()?.toString() ?: "",
                 a?.getText()?.toString() ?: ""
             ]
