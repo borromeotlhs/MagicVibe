@@ -12,7 +12,7 @@ import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element
 // validationErrorsToCSV.groovy
 // Exports CURRENT validation annotations (VALIDATION_ONLY) to CSV
 // and posts the saved path to the Notification Window.
-// Writes TargetURI/OwnerURI as plain mdel:// links for direct navigation.
+// Writes TargetURI/OwnerURI as Excel HYPERLINK formulas wrapping mdel:// links for click-through.
 // Robust against Elements that do NOT have getQualifiedName().
 // ============================================================
 
@@ -60,11 +60,18 @@ String safeElementId(Element e) {
     }
 }
 
-String safeElementUri(Element e) {
-    def id = safeElementId(e)
-    return (id == null || id.trim().isEmpty()) ? "" : "mdel://${id}"
+
+
+String excelFormulaEscape(String value) {
+    return value == null ? "" : value.replace("\"", "\"\"")
 }
 
+String safeElementHyperlink(Element e, String label) {
+    def id = safeElementId(e)
+    if (id == null || id.trim().isEmpty()) return ""
+    String linkLabel = (label == null || label.trim().isEmpty()) ? id : label
+    return "=HYPERLINK(\"mdel://${excelFormulaEscape(id)}\",\"${excelFormulaEscape(linkLabel)}\")"
+}
 
 String safeProjectName(def modelRoot) {
     if (modelRoot == null) return ""
@@ -236,13 +243,13 @@ outFile.withWriter("UTF-8") { w ->
                 e ? safeQualifiedName(e) : "",
                 e ? safeTypeName(e) : (t == null ? "" : t.getClass().getSimpleName()),
                 e ? safeElementId(e) : "",
-                e ? safeElementUri(e) : "",
+                e ? safeElementHyperlink(e, safeName(e)) : "",
                 e ? projectScopeLabel(e, primaryRoot, usedRoots) : "",
                 owner ? safeName(owner) : "",
                 owner ? safeQualifiedName(owner) : "",
                 owner ? safeTypeName(owner) : "",
                 owner ? safeElementId(owner) : "",
-                owner ? safeElementUri(owner) : "",
+                owner ? safeElementHyperlink(owner, safeName(owner)) : "",
                 owner ? projectScopeLabel(owner, primaryRoot, usedRoots) : "",
                 e ? ownerChain(e) : "",
                 a?.getSeverity()?.toString() ?: "",
