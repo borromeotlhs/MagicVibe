@@ -12,7 +12,7 @@ import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element
 // validationErrorsToCSV.groovy
 // Exports CURRENT validation annotations (VALIDATION_ONLY) to CSV
 // and posts the saved path to the Notification Window.
-// Adds OwnerURI in mdel://<ownerElementId> format for direct navigation.
+// Writes TargetURI/OwnerURI as Excel HYPERLINK formulas to mdel:// links for direct navigation.
 // Robust against Elements that do NOT have getQualifiedName().
 // ============================================================
 
@@ -60,13 +60,17 @@ String safeElementId(Element e) {
     }
 }
 
-String toMdelUri(String id) {
-    return (id == null || id.trim().isEmpty()) ? "" : "mdel://${id}"
+
+String excelEscape(String value) {
+    return value == null ? "" : value.replace("\"", "\"\"")
 }
 
-String safeElementUri(Element e) {
-    return toMdelUri(safeElementId(e))
+String toExcelMdelHyperlink(String id, String label) {
+    if (id == null || id.trim().isEmpty()) return ""
+    String safeLabel = excelEscape(label == null || label.trim().isEmpty() ? id : label)
+    return "=HYPERLINK(\"mdel://${excelEscape(id)}\",\"${safeLabel}\")"
 }
+
 
 String safeProjectName(def modelRoot) {
     if (modelRoot == null) return ""
@@ -235,12 +239,12 @@ outFile.withWriter("UTF-8") { w ->
                 e ? safeName(e) : "",
                 e ? safeTypeName(e) : (t == null ? "" : t.getClass().getSimpleName()),
                 e ? safeElementId(e) : "",
-                e ? safeElementUri(e) : "",
+                e ? toExcelMdelHyperlink(safeElementId(e), displayPath(e)) : "",
                 e ? projectScopeLabel(e, primaryRoot, usedRoots) : "",
                 owner ? safeName(owner) : "",
                 owner ? safeTypeName(owner) : "",
                 owner ? safeElementId(owner) : "",
-                owner ? safeElementUri(owner) : "",
+                owner ? toExcelMdelHyperlink(safeElementId(owner), safeName(owner)) : "",
                 owner ? projectScopeLabel(owner, primaryRoot, usedRoots) : "",
                 e ? ownerChain(e) : "",
                 a?.getSeverity()?.toString() ?: "",
