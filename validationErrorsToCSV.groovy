@@ -7,7 +7,7 @@ import com.nomagic.magicdraw.ui.notification.NotificationManager
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element
 
 // ============================================================
-// getValidationFindings_mdelOwnerUri.groovy
+// validationErrorsToCSV.groovy
 // Exports CURRENT validation annotations (VALIDATION_ONLY) to CSV
 // and posts the saved path to the Notification Window.
 // Adds OwnerURI in mdel://<ownerElementId> format for direct navigation.
@@ -173,7 +173,7 @@ def absPath = outFile.getCanonicalPath()
 guiLog.log("Validation findings CSV saved (" + rowCount + " rows): " + absPath)
 
 // 2) Notification Window entry (and open the window)
-def noteId = "getValidationFindings_csv_" + ts
+def noteId = "validationErrorsToCSV_" + ts
 def note = new Notification(
     noteId,
     "Validation findings exported",
