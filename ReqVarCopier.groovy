@@ -299,13 +299,21 @@ def gatherReqs = { Element element, reqStereo ->
 // =========================================================================================
 /** UTIL: Collect FeatureImpact dependencies adjacent to a requirement */
 // =========================================================================================
+def isFeatureImpactRel = { Relationship rel, featureImpactStereo ->
+    if (!(rel instanceof Relationship)) return false
+    if (featureImpactStereo) {
+        return StereotypesHelper.hasStereotypeOrDerived(rel, featureImpactStereo)
+    }
+    return StereotypesHelper.hasStereotypeOrDerived(rel, "FeatureImpact")
+}
+
 def collectFeatureImpactRels = { Element req, featureImpactStereo ->
+    if (!(req instanceof Element)) return []
     def rels = []
     try { req.getSupplierDependency()?.each { rels << it } } catch (Throwable ignored) {}
     try { req.getClientDependency()?.each { rels << it } } catch (Throwable ignored) {}
     return rels.findAll { rel ->
-        rel instanceof Relationship && featureImpactStereo &&
-                StereotypesHelper.hasStereotypeOrDerived(rel, featureImpactStereo)
+        isFeatureImpactRel(rel, featureImpactStereo)
     }
 }
 
@@ -414,8 +422,7 @@ def hasDuplicateFeatureImpact = { Element toReq,
     def cliTarget = new LinkedHashSet<Element>(targetCliSet ?: [])
 
     return deps.any { dep ->
-        if (!(dep instanceof Relationship)) return false
-        if (!featureImpactStereo || !StereotypesHelper.hasStereotypeOrDerived(dep, featureImpactStereo)) return false
+        if (!isFeatureImpactRel(dep, featureImpactStereo)) return false
 
         def supSet = new LinkedHashSet<Element>(dep.getSupplier()?.toList() ?: [])
         def cliSet = new LinkedHashSet<Element>(dep.getClient()?.toList() ?: [])
@@ -672,6 +679,8 @@ try {
             copiedCount++
         }
 
+        def fromEpvpsForFeatureImpact = []
+
         // 3b) ElementPropertyVariationPoint artifacts
         if (epvpStereo) {
             def epvpKey = { Element el ->
@@ -681,6 +690,7 @@ try {
             }
 
             def fromEpvps = collectEpvpElements(fromReq, epvpStereo)
+            fromEpvpsForFeatureImpact = fromEpvps
             def toEpvpsExisting = collectEpvpElements(toReq, epvpStereo)
 
             fromEpvps.each { Element epvpEl ->
@@ -820,8 +830,28 @@ try {
         }
 
         // 4) FeatureImpact relationships
-        if (copyFeatureImpact && featureImpactStereo) {
-            def rels = collectFeatureImpactRels(fromReq, featureImpactStereo)
+        if (copyFeatureImpact) {
+            def fiSources = [] as LinkedHashSet<Element>
+            fiSources << fromReq
+            fromRules.each { r -> if (r instanceof Element) fiSources << r }
+            fromEpvpsForFeatureImpact.each { e -> if (e instanceof Element) fiSources << e }
+
+            def relSet = [] as LinkedHashSet<Relationship>
+            fiSources.each { Element src ->
+                collectFeatureImpactRels(src, featureImpactStereo).each { Relationship rel ->
+                    relSet << rel
+                }
+            }
+
+            def rels = relSet.toList()
+            def logFeatureImpactResult = { String status, String detail ->
+                logCsvRow(logWriter, status, fromReq, toReq, "FeatureImpact", detail)
+                if ("Copied".equals(status)) copiedCount++
+                if ("Skipped".equals(status)) skippedCount++
+            }
+
+            if (rels.isEmpty()) return
+
             boolean scopeEditable = (relScope != null)
             try {
                 if (scopeEditable) {
@@ -830,16 +860,16 @@ try {
             } catch (Throwable ignored) {}
 
             if (!scopeEditable) {
-                if (!rels.isEmpty()) {
-                    rels.each { candidateCount++ }
-                    logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "Relationship owner is null or read-only; skipping FeatureImpact copy")
-                    skippedCount += rels.size()
+                rels.each {
+                    candidateCount++
+                    logFeatureImpactResult("Skipped", "Scope not editable; skipping FeatureImpact copy")
                 }
                 return
             }
 
             rels.each { Relationship rel ->
                 candidateCount++
+                boolean proceed = true
                 def remapEndpoint = { Element ep ->
                     if (ep == fromReq) return toReq
                     if (ruleMap.containsKey(ep)) return ruleMap[ep]
@@ -851,57 +881,59 @@ try {
                 def clients   = rel.getClient()?.toList() ?: []
 
                 boolean touchesFrom = suppliers.contains(fromReq) || clients.contains(fromReq)
-                if (!touchesFrom) return
-
-                // Reuse the existing feature / system endpoints; only FROM requirement
-                // and ExistenceVariationPoint rules are remapped. Everything else stays
-                // as-is to avoid copying or cloning features that already exist.
-                def targetSuppliers = suppliers.collect { remapEndpoint(it) }
-                def targetClients   = clients.collect { remapEndpoint(it) }
-
-                if (hasDuplicateFeatureImpact(toReq, targetSuppliers, targetClients, featureImpactStereo)) {
-                    logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "Existing relationship found")
-                    skippedCount++
-                    return
+                if (!touchesFrom) {
+                    logFeatureImpactResult("Skipped", "Relationship does not touch source requirement; skipping")
+                    proceed = false
                 }
 
-                if (!DRY_RUN) {
-                    Relationship newRel = null
-                    try {
-                        newRel = project.getElementsFactory().createDependencyInstance()
-                        mem.addElement(newRel, relScope)
+                if (proceed) {
+                    // Reuse the existing feature / system endpoints; only FROM requirement
+                    // and ExistenceVariationPoint rules are remapped. Everything else stays
+                    // as-is to avoid copying or cloning features that already exist.
+                    def targetSuppliers = suppliers.collect { remapEndpoint(it) }
+                    def targetClients   = clients.collect { remapEndpoint(it) }
 
-                        if (newRel.getOwner() == null) {
-                            try { ModelElementsManager.getInstance().removeElement(newRel) } catch (Throwable ignored) {}
-                            logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "New dependency has no owner; skipping to avoid corruption")
-                            skippedCount++
-                            return
-                        }
+                    if (hasDuplicateFeatureImpact(toReq, targetSuppliers, targetClients, featureImpactStereo)) {
+                        logFeatureImpactResult("Skipped", "Existing relationship found")
+                        proceed = false
+                    } else if (!DRY_RUN) {
+                        Relationship newRel = null
+                        try {
+                            newRel = project.getElementsFactory().createDependencyInstance()
+                            mem.addElement(newRel, relScope)
 
-                        new LinkedHashSet<Element>(targetSuppliers).each { s -> newRel.getSupplier().add(s) }
-                        new LinkedHashSet<Element>(targetClients).each   { c -> newRel.getClient().add(c) }
+                            if (newRel.getOwner() == null) {
+                                try { ModelElementsManager.getInstance().removeElement(newRel) } catch (Throwable ignored) {}
+                                logFeatureImpactResult("Skipped", "New dependency has no owner; skipping to avoid corruption")
+                                proceed = false
+                            } else {
+                                new LinkedHashSet<Element>(targetSuppliers).each { s -> newRel.getSupplier().add(s) }
+                                new LinkedHashSet<Element>(targetClients).each   { c -> newRel.getClient().add(c) }
 
-                        if (rel instanceof NamedElement) {
-                            newRel.setName(rel.getName())
-                        }
+                                if (rel instanceof NamedElement) {
+                                    newRel.setName(rel.getName())
+                                }
 
-                        def applied = StereotypesHelper.getStereotypes(rel)
-                        applied?.each { st ->
-                            StereotypesHelper.addStereotype(newRel, st)
+                                def applied = StereotypesHelper.getStereotypes(rel)
+                                applied?.each { st ->
+                                    StereotypesHelper.addStereotype(newRel, st)
+                                }
+                            }
+                        } catch (Throwable t) {
+                            if (newRel != null) {
+                                try { ModelElementsManager.getInstance().removeElement(newRel) } catch (Throwable ignored) {}
+                            }
+                            ERR("Failed to duplicate FeatureImpact for ${fromReq?.name} → ${toReq?.name}: ${t}")
+                            logFeatureImpactResult("Skipped", "Error duplicating relationship: ${t}")
+                            proceed = false
                         }
-                    } catch (Throwable t) {
-                        if (newRel != null) {
-                            try { ModelElementsManager.getInstance().removeElement(newRel) } catch (Throwable ignored) {}
-                        }
-                        ERR("Failed to duplicate FeatureImpact for ${fromReq?.name} → ${toReq?.name}: ${t}")
-                        logCsvRow(logWriter, "Skipped", fromReq, toReq, "FeatureImpact", "Error duplicating relationship: ${t}")
-                        skippedCount++
-                        return
+                    }
+
+                    if (proceed) {
+                        def detail = DRY_RUN ? "Relationship would be duplicated (DRY_RUN)" : "Relationship duplicated"
+                        logFeatureImpactResult("Copied", detail)
                     }
                 }
-
-                logCsvRow(logWriter, "Copied", fromReq, toReq, "FeatureImpact", "Relationship duplicated")
-                copiedCount++
             }
         }
     }
