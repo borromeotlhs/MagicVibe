@@ -1,16 +1,18 @@
+this.metaClass = null
 import com.nomagic.magicdraw.core.Application
 import com.nomagic.magicdraw.core.Project
 import com.nomagic.magicdraw.annotation.AnnotationManager
 import com.nomagic.magicdraw.validation.ValidationConstants
 import com.nomagic.magicdraw.ui.notification.Notification
 import com.nomagic.magicdraw.ui.notification.NotificationManager
+import com.nomagic.magicdraw.uml.symbols.PresentationElement
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element
 
 // ============================================================
 // validationErrorsToCSV.groovy
 // Exports CURRENT validation annotations (VALIDATION_ONLY) to CSV
 // and posts the saved path to the Notification Window.
-// Adds OwnerURI in mdel://<ownerElementId> format for direct navigation.
+// Writes TargetURI/OwnerURI as Excel HYPERLINK formulas wrapping mdel:// links for click-through.
 // Robust against Elements that do NOT have getQualifiedName().
 // ============================================================
 
@@ -58,12 +60,17 @@ String safeElementId(Element e) {
     }
 }
 
-String toMdelUri(String id) {
-    return (id == null || id.trim().isEmpty()) ? "" : "mdel://${id}"
+
+
+String excelFormulaEscape(String value) {
+    return value == null ? "" : value.replace("\"", "\"\"")
 }
 
-String safeElementUri(Element e) {
-    return toMdelUri(safeElementId(e))
+String safeElementHyperlink(Element e, String label) {
+    def id = safeElementId(e)
+    if (id == null || id.trim().isEmpty()) return ""
+    String linkLabel = (label == null || label.trim().isEmpty()) ? id : label
+    return "=HYPERLINK(\"mdel://${excelFormulaEscape(id)}\",\"${excelFormulaEscape(linkLabel)}\")"
 }
 
 String safeProjectName(def modelRoot) {
@@ -138,6 +145,36 @@ Element getProjectRootForElement(Element e, Element primaryRoot, List<Element> u
     return null
 }
 
+
+Element unwrapToElement(def target) {
+    if (target instanceof Element) return (Element) target
+    if (target instanceof PresentationElement) {
+        try {
+            def backing = target.getElement()
+            if (backing instanceof Element) return (Element) backing
+        } catch (Throwable ignore) { }
+    }
+    return null
+}
+
+
+String safeRuleName(def annotation) {
+    if (annotation == null) return ""
+    try {
+        if (annotation.metaClass?.respondsTo(annotation, "getRule")) {
+            def r = annotation.getRule()
+            if (r != null) {
+                if (r.metaClass?.respondsTo(r, "getName")) {
+                    def rn = r.getName()
+                    if (rn != null) return rn.toString()
+                }
+                return r.toString()
+            }
+        }
+    } catch (Throwable ignore) { }
+    return ""
+}
+
 String projectScopeLabel(Element e, Element primaryRoot, List<Element> usedRoots) {
     def root = getProjectRootForElement(e, primaryRoot, usedRoots)
     if (root == null) return ""
@@ -172,17 +209,20 @@ outFile.withWriter("UTF-8") { w ->
     w.writeLine([
         "TargetDisplayPath",
         "TargetName",
+        "TargetQualifiedName",
         "TargetType",
         "TargetID",
         "TargetURI",
         "TargetProject",
         "OwnerName",
+        "OwnerQualifiedName",
         "OwnerType",
         "OwnerID",
         "OwnerURI",
         "OwnerProject",
         "OwnerChain",
         "Severity",
+        "Rule",
         "Kind",
         "Message"
     ].collect { csvCell(it) }.join(","))
@@ -190,8 +230,8 @@ outFile.withWriter("UTF-8") { w ->
     // rows (CURRENT annotations)
     def targets = am.getAnnotatedElements(subset)
     targets.each { t ->
-        // Targets can be non-Element objects; most validation targets are Elements, but keep it safe.
-        Element e = (t instanceof Element) ? (Element) t : null
+        // Keep annotation lookup keyed by original target object, but normalize target element for export.
+        Element e = unwrapToElement(t)
         def annos = am.getAnnotations(t, subset)
 
         Element owner = (e != null) ? safeOwnerElement(e) : null
@@ -200,17 +240,20 @@ outFile.withWriter("UTF-8") { w ->
             def row = [
                 e ? displayPath(e) : (t?.toString() ?: ""),
                 e ? safeName(e) : "",
+                e ? safeQualifiedName(e) : "",
                 e ? safeTypeName(e) : (t == null ? "" : t.getClass().getSimpleName()),
                 e ? safeElementId(e) : "",
-                e ? safeElementUri(e) : "",
+                e ? safeElementHyperlink(e, safeName(e)) : "",
                 e ? projectScopeLabel(e, primaryRoot, usedRoots) : "",
                 owner ? safeName(owner) : "",
+                owner ? safeQualifiedName(owner) : "",
                 owner ? safeTypeName(owner) : "",
                 owner ? safeElementId(owner) : "",
-                owner ? safeElementUri(owner) : "",
+                owner ? safeElementHyperlink(owner, safeName(owner)) : "",
                 owner ? projectScopeLabel(owner, primaryRoot, usedRoots) : "",
                 e ? ownerChain(e) : "",
                 a?.getSeverity()?.toString() ?: "",
+                safeRuleName(a),
                 a?.getKind()?.toString() ?: "",
                 a?.getText()?.toString() ?: ""
             ]
