@@ -12,7 +12,7 @@ import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element
 // validationErrorsToCSV.groovy
 // Exports CURRENT validation annotations (VALIDATION_ONLY) to CSV
 // and posts the saved path to the Notification Window.
-// Writes TargetURI/OwnerURI as Excel HYPERLINK formulas to mdel:// links for direct navigation.
+// Writes TargetURI/OwnerURI as plain mdel:// links for direct navigation.
 // Robust against Elements that do NOT have getQualifiedName().
 // ============================================================
 
@@ -60,15 +60,9 @@ String safeElementId(Element e) {
     }
 }
 
-
-String excelEscape(String value) {
-    return value == null ? "" : value.replace("\"", "\"\"")
-}
-
-String toExcelMdelHyperlink(String id, String label) {
-    if (id == null || id.trim().isEmpty()) return ""
-    String safeLabel = excelEscape(label == null || label.trim().isEmpty() ? id : label)
-    return "=HYPERLINK(\"mdel://${excelEscape(id)}\",\"${safeLabel}\")"
+String safeElementUri(Element e) {
+    def id = safeElementId(e)
+    return (id == null || id.trim().isEmpty()) ? "" : "mdel://${id}"
 }
 
 
@@ -208,11 +202,13 @@ outFile.withWriter("UTF-8") { w ->
     w.writeLine([
         "TargetDisplayPath",
         "TargetName",
+        "TargetQualifiedName",
         "TargetType",
         "TargetID",
         "TargetURI",
         "TargetProject",
         "OwnerName",
+        "OwnerQualifiedName",
         "OwnerType",
         "OwnerID",
         "OwnerURI",
@@ -237,14 +233,16 @@ outFile.withWriter("UTF-8") { w ->
             def row = [
                 e ? displayPath(e) : (t?.toString() ?: ""),
                 e ? safeName(e) : "",
+                e ? safeQualifiedName(e) : "",
                 e ? safeTypeName(e) : (t == null ? "" : t.getClass().getSimpleName()),
                 e ? safeElementId(e) : "",
-                e ? toExcelMdelHyperlink(safeElementId(e), displayPath(e)) : "",
+                e ? safeElementUri(e) : "",
                 e ? projectScopeLabel(e, primaryRoot, usedRoots) : "",
                 owner ? safeName(owner) : "",
+                owner ? safeQualifiedName(owner) : "",
                 owner ? safeTypeName(owner) : "",
                 owner ? safeElementId(owner) : "",
-                owner ? toExcelMdelHyperlink(safeElementId(owner), safeName(owner)) : "",
+                owner ? safeElementUri(owner) : "",
                 owner ? projectScopeLabel(owner, primaryRoot, usedRoots) : "",
                 e ? ownerChain(e) : "",
                 a?.getSeverity()?.toString() ?: "",
