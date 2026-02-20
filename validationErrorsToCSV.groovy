@@ -4,6 +4,7 @@ import com.nomagic.magicdraw.annotation.AnnotationManager
 import com.nomagic.magicdraw.validation.ValidationConstants
 import com.nomagic.magicdraw.ui.notification.Notification
 import com.nomagic.magicdraw.ui.notification.NotificationManager
+import com.nomagic.magicdraw.uml.symbols.PresentationElement
 import com.nomagic.uml2.ext.magicdraw.classes.mdkernel.Element
 
 // ============================================================
@@ -138,6 +139,18 @@ Element getProjectRootForElement(Element e, Element primaryRoot, List<Element> u
     return null
 }
 
+
+Element unwrapToElement(def target) {
+    if (target instanceof Element) return (Element) target
+    if (target instanceof PresentationElement) {
+        try {
+            def backing = target.getElement()
+            if (backing instanceof Element) return (Element) backing
+        } catch (Throwable ignore) { }
+    }
+    return null
+}
+
 String projectScopeLabel(Element e, Element primaryRoot, List<Element> usedRoots) {
     def root = getProjectRootForElement(e, primaryRoot, usedRoots)
     if (root == null) return ""
@@ -183,6 +196,7 @@ outFile.withWriter("UTF-8") { w ->
         "OwnerProject",
         "OwnerChain",
         "Severity",
+        "Rule",
         "Kind",
         "Message"
     ].collect { csvCell(it) }.join(","))
@@ -190,8 +204,8 @@ outFile.withWriter("UTF-8") { w ->
     // rows (CURRENT annotations)
     def targets = am.getAnnotatedElements(subset)
     targets.each { t ->
-        // Targets can be non-Element objects; most validation targets are Elements, but keep it safe.
-        Element e = (t instanceof Element) ? (Element) t : null
+        // Keep annotation lookup keyed by original target object, but normalize target element for export.
+        Element e = unwrapToElement(t)
         def annos = am.getAnnotations(t, subset)
 
         Element owner = (e != null) ? safeOwnerElement(e) : null
@@ -211,6 +225,7 @@ outFile.withWriter("UTF-8") { w ->
                 owner ? projectScopeLabel(owner, primaryRoot, usedRoots) : "",
                 e ? ownerChain(e) : "",
                 a?.getSeverity()?.toString() ?: "",
+                a?.getRule()?.getName()?.toString() ?: "",
                 a?.getKind()?.toString() ?: "",
                 a?.getText()?.toString() ?: ""
             ]
