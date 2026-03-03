@@ -399,4 +399,14 @@ Rely on stereotypes, not Java metaclasses, in macros when the type symbol is fla
 
 here is a snippet of how someone else checks for a requirement, so you should follow this design pattern for abstraction: import com.nomagic.magicdraw.sysml.util.SysMLProfile /** True if e is a SysML requirement (by «requirement» stereotype). */ boolean isRequirement(Element e) { if (!e) return false def proj = ENV.proj if (!proj) return false def sysml = SysMLProfile.getInstance(proj) def reqStereo = sysml?.getRequirement() return reqStereo && StereotypesHelper.hasStereotypeOrDerived(e, reqStereo) }
 
+## New (latest) assumptions added
 
+15 TRUE Selection retrieval in WORK_ENV should be done via com.nomagic.magicdraw.ui.SelectionProvider (not com.nomagic.magicdraw.ui.SelectionManager). SelectionProvider.getInstance(project).getMainElement() is callable in the macro environment.
+
+15.1 TRUE The object returned by SelectionProvider.getMainElement() may be a diagram symbol/wrapper; when it exposes getElement(), calling getElement() should be treated as the correct way to unwrap to the underlying model element.
+
+15.2 TRUE Avoid importing BaseElement from com.nomagic.uml2.ext.magicdraw.classes.mdkernel.* for selection typing; SelectionProvider’s main element is tied to com.nomagic.magicdraw.uml.BaseElement (or can be handled with def/duck typing to keep macros portable).
+
+15.3 TRUE For “getClassifier” behavior, treat Property/ProxyPort/Part as TypedElement (duck type: respondsTo("getType")); the returned type is the desired classifier-ish result when available.
+
+15.4 TRUE Keep getClassifier.groovy and related tests import-minimal; prefer duck-typing + reflection to avoid WORK_ENV class-resolution volatility.

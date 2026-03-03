@@ -378,3 +378,13 @@ project.getResourcesManager(), or
 
 any API exposed through that resource manager
 are invalid in this environment and must be avoided.
+
+## New testable assertions added
+
+A15 – SelectionProvider selection access is available (macro-safe)
+A15.1 In WORK_ENV, com.nomagic.magicdraw.ui.SelectionProvider is resolvable and callable in the macro environment.
+A15.2 In WORK_ENV, selection retrieval should not depend on com.nomagic.magicdraw.ui.SelectionManager (it may be missing or unnecessary).
+A15.3 In WORK_ENV, SelectionProvider.getInstance(project).getMainElement() can be called without throwing, and may return null when nothing is selected.
+A15.4 If the returned main element respondsTo("getElement"), calling getElement() should not throw; it may return the underlying model element.
+A15.5 For elements that respondTo("getType"), calling getType() should not throw; when non-null it is the desired classifier-ish result for part properties and proxy ports.
+
