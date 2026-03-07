@@ -1,0 +1,39 @@
+[
+  {
+    "diagram": "bdd_vehicle.png",
+    "entities": [
+      "Vehicle",
+      "Engine",
+      "Wheel"
+    ],
+    "relationships": [
+      {
+        "type": "composition",
+        "source": "Vehicle",
+        "target": "Engine"
+      },
+      {
+        "type": "composition",
+        "source": "Vehicle",
+        "target": "Wheel"
+      }
+    ],
+    "sysmlv2": "\npackage VehicleModel {\n   part def Engine;\n   part def Wheel;\n\n   part def Vehicle {\n      part engine : Engine;\n      part wheels[4] : Wheel;\n   }\n}\n"
+  },
+  {
+    "diagram": "ibd_power_system.png",
+    "entities": [
+      "Battery",
+      "Motor",
+      "PowerPort"
+    ],
+    "relationships": [
+      {
+        "type": "connection",
+        "source": "Battery.out",
+        "target": "Motor.in"
+      }
+    ],
+    "sysmlv2": "\npackage PowerSystem {\n\n   port def PowerPort;\n\n   part def Battery {\n      port out : PowerPort;\n   }\n\n   part def Motor {\n      port in : PowerPort;\n   }\n\n   part system {\n      connect battery.out to motor.in;\n   }\n\n}\n"
+  }
+]
